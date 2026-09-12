@@ -39,6 +39,7 @@ fi
 # Each entry: "human label|grep mode|pattern"
 #   mode F = fixed string (grep -aF), P = Perl regex (grep -aP)
 MARKERS=(
+  "status: microphone driven waveform|F|WISPR_LINUX_VOICE_WAVEFORM"
   "sandbox: compatible preloads|F|WISPR_LINUX_SANDBOX_PRELOAD_V1"
   "startup: hidden dashboard|F|WISPR_LINUX_START_HIDDEN"
   "status: display cadence|F|WISPR_LINUX_STATUS_DISPLAY_CADENCE"
