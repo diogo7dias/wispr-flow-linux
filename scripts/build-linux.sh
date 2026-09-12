@@ -54,7 +54,7 @@ STAGE="$WORK_DIR/stage"                          # becomes the app's resources/ 
 # override is exported. Keep APP_VERSION in lockstep with build.sh's APP_VERSION
 # so a standalone `build-linux.sh` run stages the same version the orchestrator
 # does (a divergent default silently mislabels the staged tree).
-APP_VERSION="${APP_VERSION:-1.5.695}"
+APP_VERSION="${APP_VERSION:-1.6.827}"
 ELECTRON_MAJOR="${ELECTRON_MAJOR:-42}"
 ELECTRON_VERSION="${ELECTRON_VERSION:-42.3.0}"
 ARCH="${ARCH:-x64}"   # linux-x64; the helper + sqlite must match
