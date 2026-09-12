@@ -39,6 +39,10 @@ fi
 # Each entry: "human label|grep mode|pattern"
 #   mode F = fixed string (grep -aF), P = Perl regex (grep -aP)
 MARKERS=(
+  "sandbox: compatible preloads|F|WISPR_LINUX_SANDBOX_PRELOAD_V1"
+  "startup: hidden dashboard|F|WISPR_LINUX_START_HIDDEN"
+  "status: display cadence|F|WISPR_LINUX_STATUS_DISPLAY_CADENCE"
+  "status: 70 percent size|F|WISPR_LINUX_STATUS_SIZE_70"
   "helper-resolver: Linux branch marker|F|WISPR_LINUX_HELPER_BRANCH"
   "helper-resolver: Linux helper log line|F|Running packaged Linux Helper service"
   "helper-resolver: Linux helper staged path|F|wispr-flow-linux-helper"

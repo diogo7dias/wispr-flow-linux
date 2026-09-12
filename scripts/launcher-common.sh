@@ -108,10 +108,12 @@ build_electron_args() {
 
 	electron_args=()
 
-	# Sandbox: deb/rpm install chrome-sandbox setuid-root, so Electron
-	# sandboxes itself with no flag. The AppImage runs from a FUSE mount
-	# where the setuid bit is dropped, so it must pass --no-sandbox.
-	[[ $package_type == 'appimage' ]] && electron_args+=('--no-sandbox')
+	# AppImage uses unprivileged user namespaces, not a setuid helper.
+	# Patched preloads support the user-namespace renderer sandbox.
+	# Never silently fall back to --no-sandbox when namespaces are unavailable.
+	[[ $package_type == 'appimage' ]] && electron_args+=('--disable-setuid-sandbox')
+	electron_args+=('--enable-sandbox')
+	electron_args+=('--use-angle=gl' '--force-device-scale-factor=1')
 
 	# WM_CLASS must match the .desktop StartupWMClass and upstream
 	# productName so the window groups under the right taskbar icon.

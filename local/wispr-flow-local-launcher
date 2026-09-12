@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Local extracted installation: use Chromium's user-namespace sandbox.
+# Requires sandbox-preloads.cjs in the installed archive.
+# Never setuid a user-writable binary.
+set -uo pipefail
+
+app_dir='/home/ddm/.local/share/wispr-flow/AppDir/usr/lib/wispr-flow'
+electron_bin="$app_dir/wispr-flow"
+helper_bin="$app_dir/resources/Release/wispr-flow-linux-helper"
+source "$app_dir/launcher-common.sh"
+
+if [[ ${1:-} == '--doctor' ]]; then
+	run_doctor "$helper_bin" "$electron_bin"
+	exit $?
+fi
+if [[ ${1:-} == '--install-udev-rules' ]]; then
+	install_udev_rules
+	exit $?
+fi
+
+setup_logging || exit 1
+setup_electron_env
+cleanup_stale_lock
+check_display || exit 1
+detect_display_backend
+# Non-AppImage mode avoids the blanket --no-sandbox flag.
+build_electron_args 'appimage'
+log_message '--- Wispr Flow local user-namespace launcher ---'
+cd /home/ddm || exit 1
+exec "$electron_bin" "${electron_args[@]}" "$@" >> "$log_file" 2>&1

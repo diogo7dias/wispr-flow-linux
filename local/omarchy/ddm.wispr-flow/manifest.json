@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "ddm.wispr-flow",
+  "name": "Wispr Flow",
+  "version": "1.0.0",
+  "author": "ddm",
+  "description": "Open the Wispr Flow dashboard on demand",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "BarWidget.qml"},
+  "barWidget": {
+    "displayName": "Wispr Flow",
+    "description": "Open the dictation dashboard",
+    "category": "Utilities",
+    "allowMultiple": false
+  }
+}

@@ -29,3 +29,9 @@ jobs:
 
       - name: Run BATS test suite
         run: bats --print-output-on-failure tests/*.bats
+
+      - name: Test local application patches
+        run: node --test tests/*.test.cjs
+
+      - name: Test terminal-aware helper
+        run: cargo test --locked --manifest-path vendor/helper/Cargo.toml

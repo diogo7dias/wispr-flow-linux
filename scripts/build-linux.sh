@@ -84,6 +84,14 @@ warn()  { printf '  \033[1;31m[WARN]\033[0m   %s\n' "$*"; }
 #        the packaging makers refuse a helper-less tree, so nothing broken
 #        ships).
 resolve_helper_bin() {
+  # This fork carries the reviewed local helper fixes as source, not a cache.
+  if [[ -z "$HELPER_BIN_PRESET" ]]; then
+    cargo build --release --locked \
+      --target-dir "$PROJECT_ROOT/vendor/helper/target" \
+      --manifest-path "$PROJECT_ROOT/vendor/helper/Cargo.toml" || exit 1
+    HELPER_BIN="$PROJECT_ROOT/vendor/helper/target/release/wispr-flow-linux-helper"
+    return 0
+  fi
   local helper_dir pinned stamp
   helper_dir="$(dirname "$HELPER_BIN")"
 
@@ -585,12 +593,14 @@ step7_helper_and_repack() {
   #     NOTHING in @electron/asar and silently leaves the .node packed in-archive.
   local contents="$WORK_DIR/app.asar.contents"
   if [[ -d "$contents" ]] && command -v npx >/dev/null; then
+    node "$SCRIPT_DIR/apply-local-fixes.cjs" "$contents" || exit 1
     auto "Repacking app.asar (with --unpack '*.node')..."
     if npx --yes @electron/asar pack "$contents" "$STAGE/app.asar" \
       --unpack '*.node'; then
       auto "Wrote $STAGE/app.asar"
     else
       warn "asar pack failed (network for @electron/asar?). See MANUAL note."
+      exit 1
     fi
 
     # 7c. Static-verify the SHIPPED asar carries the Linux patch markers, so a

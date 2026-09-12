@@ -230,11 +230,13 @@ teardown() {
 	has_electron_arg '--class=Wispr Flow'
 }
 
-@test "build_electron_args: appimage adds --no-sandbox" {
+@test "build_electron_args: appimage enables namespace sandbox" {
 	is_wayland=false
 	setup_logging
 	build_electron_args appimage
-	has_electron_arg '--no-sandbox'
+	! has_electron_arg '--no-sandbox'
+	has_electron_arg '--enable-sandbox'
+	has_electron_arg '--disable-setuid-sandbox'
 }
 
 @test "build_electron_args: rpm does NOT add --no-sandbox" {

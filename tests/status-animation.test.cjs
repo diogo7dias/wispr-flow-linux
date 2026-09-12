@@ -1,0 +1,26 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const vm = require('node:vm');
+const {spawnSync} = require('node:child_process');
+const script = path.resolve(__dirname, '../scripts/patches/status-animation.cjs');
+test('ticker follows animation frames, retains visibility guard, and is idempotent', t => {
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wispr-ticker-test-'));
+ t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+ const file = path.join(dir, 'index.js');
+ fs.writeFileSync(file, 'let deadline=null,timer=null,frame=null;function callback(){} function tick(now){if(document.visibilityState!=="visible")return;deadline=(deadline??now)+50,deadline<now+25&&(deadline=now+50);const delay=Math.max(0,deadline-performance.now()-10);timer=setTimeout(()=>{timer=null,frame=requestAnimationFrame(callback)},delay)}');
+ assert.equal(spawnSync(process.execPath, [script, file]).status, 0);
+ const code = fs.readFileSync(file, 'utf8');
+ let frames = 0;
+ const context = {document:{visibilityState:'visible'},requestAnimationFrame(){frames++;}};
+ vm.createContext(context);
+ vm.runInContext(code + ';tick(0)', context);
+ assert.equal(frames, 1);
+ context.document.visibilityState = 'hidden';
+ vm.runInContext('tick(0)', context);
+ assert.equal(frames, 1);
+ assert.equal(spawnSync(process.execPath, [script, file]).status, 0);
+ assert.equal(fs.readFileSync(file, 'utf8'), code);
+});

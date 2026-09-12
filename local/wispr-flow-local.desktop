@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Wispr Flow (Local Build)
+Comment=Voice dictation via the local Wispr Flow Linux build
+Exec=/home/ddm/.local/bin/wispr-flow %U
+Icon=/home/ddm/.local/share/wispr-flow/AppDir/ai.wisprflow.WisprFlow.png
+Type=Application
+Categories=AudioVideo;Utility;
+Terminal=false
