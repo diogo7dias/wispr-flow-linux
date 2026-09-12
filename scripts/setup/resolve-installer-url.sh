@@ -26,6 +26,7 @@
 set -uo pipefail
 
 readonly DEFAULT_LATEST_URL='https://dl.wisprflow.ai/windows/latest'
+readonly DEFAULT_MANIFEST_URL='https://dl.wisprflow.com/wispr-flow/win32/latest.json'
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'resolve-installer-url: %s\n' "$*" >&2; exit 1; }
@@ -51,6 +52,43 @@ done
 command -v curl >/dev/null 2>&1 || die 'curl is required'
 
 log "Resolving Wispr Flow installer from ${latest_url} ..."
+
+# The current bootstrapper is only a downloader and no longer contains the
+# Squirrel payload. Prefer Wispr's official manifest, which gives us the real
+# payload URL and a checksum before any bytes are downloaded.
+if [[ $latest_url == "$DEFAULT_LATEST_URL" ]]; then
+	if manifest_json="$(curl -fsSL --max-time 60 "$DEFAULT_MANIFEST_URL")" \
+		&& [[ -n $manifest_json ]]; then
+		if manifest_values="$(printf '%s' "$manifest_json" | python3 -c '
+import json, sys
+try:
+    item = json.load(sys.stdin)["windows"]["x64"]
+    print(item["url"])
+    print(item["sha256"])
+except (KeyError, TypeError, ValueError):
+    raise SystemExit(1)
+')"; then
+			manifest_payload_url="$(printf '%s\n' "$manifest_values" | sed -n '1p')"
+			manifest_sha256="$(printf '%s\n' "$manifest_values" | sed -n '2p')"
+			if [[ $manifest_payload_url == https://dl.wisprflow.com/* \
+				&& $manifest_sha256 =~ ^[[:xdigit:]]{64}$ ]]; then
+				version="$(printf '%s\n' "$manifest_payload_url" \
+					| sed -nE 's/.*[Ss]etup-v([0-9]+\.[0-9]+\.[0-9]+)\.exe.*/\1/p')"
+				if [[ -n $version_override ]]; then
+					version="$version_override"
+				fi
+				if [[ -n $version ]]; then
+					log "Resolved manifest version: ${version}"
+					printf 'URL=%s\n' "$manifest_payload_url"
+					printf 'VERSION=%s\n' "$version"
+					printf 'SHA256=%s\n' "${manifest_sha256,,}"
+					exit 0
+				fi
+			fi
+		fi
+	fi
+	log 'Official manifest unavailable or invalid; trying redirect fallback.'
+fi
 
 # Follow the redirect chain with a HEAD request and report the final URL.
 # -f fails on HTTP errors; -S surfaces them; -L follows redirects; -I = HEAD.
@@ -83,3 +121,4 @@ log "Resolved version: ${version}"
 
 printf 'URL=%s\n' "$final_url"
 printf 'VERSION=%s\n' "$version"
+printf 'SHA256=\n'

@@ -63,6 +63,8 @@ download_installer() {
 	local expected_sha=''
 	if [[ -n ${WISPR_EXE_SHA256:-} ]]; then
 		expected_sha="$WISPR_EXE_SHA256"
+	elif [[ -n ${installer_sha256:-} ]]; then
+		expected_sha="$installer_sha256"
 	elif [[ -f "$project_root/installer.sha256" ]]; then
 		expected_sha=$(awk '{print $1; exit}' "$project_root/installer.sha256")
 	fi
@@ -89,6 +91,7 @@ fetch_installer() {
 		|| die 'Failed to resolve the Wispr Flow installer URL (pass --exe to use a local installer)'
 	url=$(printf '%s\n' "$resolved" | sed -nE 's/^URL=//p')
 	version=$(printf '%s\n' "$resolved" | sed -nE 's/^VERSION=//p')
+	installer_sha256=$(printf '%s\n' "$resolved" | sed -nE 's/^SHA256=//p')
 	[[ -n $url ]] || die 'installer resolver returned no URL'
 
 	if [[ -n $version && $version != "${APP_VERSION:-}" ]]; then

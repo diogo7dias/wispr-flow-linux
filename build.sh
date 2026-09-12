@@ -35,6 +35,7 @@ original_home=''
 project_root=''
 work_dir=''
 installer_exe_path=''
+installer_sha256=''
 final_output_path=''
 
 #--- package metadata (constants) ----------------------------------------------
