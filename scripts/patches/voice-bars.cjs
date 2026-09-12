@@ -1,0 +1,11 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const file = process.argv[2];
+const marker = 'WISPR_LINUX_DIRECT_VOICE_BARS';
+let code = fs.readFileSync(file,'utf8');
+if (code.includes(marker)) process.exit(0);
+if (!code.includes('WISPR_LINUX_VOICE_WAVEFORM')) throw new Error('Voice waveform prerequisite missing');
+code += `\n;/*${marker}*/\n` + fs.readFileSync(path.join(__dirname,'voice-bars-runtime.js'),'utf8');
+new vm.Script(code);
+fs.writeFileSync(file,code);

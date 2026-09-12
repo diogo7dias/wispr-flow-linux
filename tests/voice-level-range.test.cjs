@@ -1,0 +1,21 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const vm=require('node:vm');
+const {spawnSync}=require('node:child_process');
+test('display has silence floor and headroom for speech',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wispr-range-test-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'main.js');
+ fs.writeFileSync(file,'function sample(raw){const encoding="wav";if("wav"===encoding){const level=scaler.scale(raw);((window,value)=>{queue.push(value)})(null,level)}}');
+ const script=path.resolve(__dirname,'../scripts/patches/voice-level-range.cjs');
+ assert.equal(spawnSync(process.execPath,[script,file]).status,0);
+ const code=fs.readFileSync(file,'utf8'),queue=[];
+ const context={queue};vm.createContext(context);vm.runInContext(code,context);
+ for(const value of [-80,-55,-45,-30,-15,0])vm.runInContext(`sample(${value})`,context);
+ assert.deepEqual(queue,[0,0,.2,.5,.8,1]);
+ assert.equal(spawnSync(process.execPath,[script,file]).status,0);
+ assert.equal(fs.readFileSync(file,'utf8'),code);
+});
