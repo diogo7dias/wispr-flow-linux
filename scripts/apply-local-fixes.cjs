@@ -6,10 +6,7 @@ if (!root) throw new Error('Usage: apply-local-fixes.cjs <extracted-app>');
 const patches = [
  ['sandbox-preloads.cjs', root],
  ['start-hidden.cjs', path.join(root, '.webpack/main/index.js')],
- ['voice-level-range.cjs', path.join(root, '.webpack/main/index.js')],
  ['status-animation.cjs', path.join(root, '.webpack/renderer/status/index.js')],
- ['voice-waveform.cjs', path.join(root, '.webpack/renderer/status/index.js')],
- ['voice-bars.cjs', path.join(root, '.webpack/renderer/status/index.js')],
  ['status-size.cjs', path.join(root, '.webpack/renderer/status/index.html')],
 ];
 for (const [script, target] of patches) {
