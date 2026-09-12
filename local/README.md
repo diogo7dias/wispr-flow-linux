@@ -27,7 +27,7 @@ The existing user Hyprland rule targets initial title `Flow Status Indicator`:
 floating, pinned, bottom-center, no border/blur/shadow/dimming/animation, opacity
 1. It remains in `~/.config/hypr/hyprland.lua` independently of application builds.
 
-The bottom-docked Linux status window is 360 by 100 logical pixels, sized for
+The bottom-docked Linux status window is 320 by 64 logical pixels, sized for
 normal dictation. Expanded meeting/reminder cards may need a larger surface.
 The diagnostic border is temporarily enabled in the user's Hyprland rule.
 Linux input regions use the validated renderer rectangles rather than global
