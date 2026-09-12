@@ -35,15 +35,13 @@
 #
 # THE PATCH (surgical, one insertion point)
 # -----------------------------------------
-# Anchor on the stable spawn literal (the 4-pipe stdio + the telemetry env
-# object -- both are preserved across minification because the stdio array and
-# the telemetry keys are string/property literals, not minified identifiers).
-# Insert a `...process.env,` spread at the FRONT of the env object so the
-# session env propagates, while the telemetry keys that follow still override
-# anything of the same name. On mac/win this only adds the (harmless) parent
-# env the helper already ignores, so the patch cannot regress those platforms.
+# Anchor on stable helper-launch literals. Older Flow bundles inline the
+# telemetry env object after the 4-pipe stdio array; current bundles factor the
+# same object into a minified function such as `N=(e=a.app.isPackaged)=>({`.
+# Insert the parent environment at the FRONT of that object so the session
+# env propagates, while telemetry keys that follow still override collisions.
 #
-#   env:{...process.env,sentryDSN:...}   (marker comment carries the grep token)
+#   env:Object.assign({},process.env,{sentryDSN:...}) (marker carries the token)
 #
 # stdio / fd-3 / exec-bit notes live in helper-resolver.sh PATCH NOTES.
 #===============================================================================
@@ -80,21 +78,30 @@ path, marker = sys.argv[1], sys.argv[2]
 with io.open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
     data = f.read()
 
-# The helper spawn site: 4-pipe stdio (fd 3 = IPC channel) + the telemetry-only
-# replacement env. Unique in the bundle; if upstream ever spreads process.env
-# itself, the `...process.env` check below makes this a clean no-op.
-anchor = 'stdio:["pipe","pipe","pipe","pipe"],env:{'
-n = data.count(anchor)
-if n != 1:
-    sys.exit(f"ERROR: expected exactly 1 helper-spawn env anchor, found {n}.")
+# Older bundle: inline object following the four-pipe helper spawn.
+anchors = [
+    'stdio:["pipe","pipe","pipe","pipe"],env:{',
+    '=>({sentryDSN:',
+]
+matches = []
+for anchor in anchors:
+    matches.extend((i, anchor) for i in range(len(data)) if data.startswith(anchor, i))
+if len(matches) != 1:
+    sys.exit(f"ERROR: expected exactly 1 helper-spawn env anchor, found {len(matches)}.")
 
-after = data[data.find(anchor) + len(anchor):]
+pos, anchor = matches[0]
+after = data[pos + len(anchor):]
 if after.startswith("...process.env") or after.startswith(f"/*{marker}*/"):
     sys.exit(0)  # already spreads the parent env -- nothing to do
 
-# Insert the marker comment + spread at the front of the env object literal.
-repl = anchor + f"/*{marker}*/...process.env,"
-data = data.replace(anchor, repl, 1)
+# Insert the marker comment + parent environment at the front of the env
+# object. Object.assign avoids depending on the bundle's parser target for
+# object spread while preserving the telemetry fields that follow.
+if anchor == '=>({sentryDSN:':
+    repl = '=>Object.assign({},process.env,{' + f"/*{marker}*/sentryDSN:"
+else:
+    repl = anchor + f"/*{marker}*/...process.env,"
+data = data[:pos] + repl + data[pos + len(anchor):]
 
 with io.open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
     f.write(data)
