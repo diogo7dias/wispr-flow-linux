@@ -27,6 +27,12 @@ The existing user Hyprland rule targets initial title `Flow Status Indicator`:
 floating, pinned, bottom-center, no border/blur/shadow/dimming/animation, opacity
 1. It remains in `~/.config/hypr/hyprland.lua` independently of application builds.
 
+The bottom-docked Linux status window is 360 by 100 logical pixels, sized for
+normal dictation. Expanded meeting/reminder cards may need a larger surface.
+The diagnostic border is temporarily enabled in the user's Hyprland rule.
+Linux input regions use the validated renderer rectangles rather than global
+cursor polling; click-through behavior still needs user confirmation.
+
 Validation: `node --test tests/*.test.cjs`, `bats tests/*.bats`, and
 `cargo test --locked --manifest-path vendor/helper/Cargo.toml`.
 Only clean-room source, patch tools, and tests belong in Git; no extracted
