@@ -6,7 +6,7 @@
 # (the .asar stores the JS bundle as concatenated plaintext, so a byte-grep
 # finds the markers without unpacking).
 #
-# verify-patches.sh greps a fixed set of markers (8 fixed strings + 1 Perl
+# verify-patches.sh greps a fixed set of markers (16 fixed strings + 1 Perl
 # regex). We build a tiny fixture carrying those exact marker strings (PASS)
 # and per-marker fixtures that omit one (FAIL).
 #
@@ -28,6 +28,14 @@ teardown() {
 # Sample lines, each carrying exactly one marker the script greps for.
 # Keyed by a short name so the negative tests can omit one at a time.
 declare -gA MARKER_SAMPLES=(
+	[audiorefresh]='/*WISPR_LINUX_AUDIO_REFRESH_V1*/'
+	[compact]='/*WISPR_LINUX_COMPACT_STATUS_WINDOW*/'
+	[inputregion]='/*WISPR_LINUX_STATUS_INPUT_REGION*/'
+	[sandbox]='/*WISPR_LINUX_SANDBOX_PRELOAD_V1*/'
+	[hidden]='/*WISPR_LINUX_START_HIDDEN*/'
+	[broadcast]='/*WISPR_LINUX_STATUS_BROADCAST*/'
+	[cadence]='/*WISPR_LINUX_STATUS_DISPLAY_CADENCE*/'
+	[scale]='/*WISPR_LINUX_STATUS_SIZE_70*/'
 	[branch]='if (process.env.WISPR_LINUX_HELPER_BRANCH) { return "linux"; }'
 	[logline]='console.log("Running packaged Linux Helper service", { serviceScriptPath: p });'
 	[stagedpath]='const s = path.join(resourcesPath, "Release", "wispr-flow-linux-helper");'
@@ -156,6 +164,9 @@ write_fixture() {
 
 @test "verify: each marker is individually load-bearing (omit-one matrix)" {
 	local name fixture failures=0
+	fixture="$(write_fixture)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 0 ]]
 	for name in "${!MARKER_SAMPLES[@]}"; do
 		fixture="$(write_fixture "$name")"
 		run "$VERIFY_SH" "$fixture"

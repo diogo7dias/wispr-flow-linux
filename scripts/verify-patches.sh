@@ -39,10 +39,12 @@ fi
 # Each entry: "human label|grep mode|pattern"
 #   mode F = fixed string (grep -aF), P = Perl regex (grep -aP)
 MARKERS=(
+  "audio: serialized device refresh|F|WISPR_LINUX_AUDIO_REFRESH_V1"
   "status: compact window|F|WISPR_LINUX_COMPACT_STATUS_WINDOW"
   "status: Linux input region|F|WISPR_LINUX_STATUS_INPUT_REGION"
   "sandbox: compatible preloads|F|WISPR_LINUX_SANDBOX_PRELOAD_V1"
   "startup: hidden dashboard|F|WISPR_LINUX_START_HIDDEN"
+  "status: dictation state broadcast|F|WISPR_LINUX_STATUS_BROADCAST"
   "status: display cadence|F|WISPR_LINUX_STATUS_DISPLAY_CADENCE"
   "status: 70 percent size|F|WISPR_LINUX_STATUS_SIZE_70"
   "helper-resolver: Linux branch marker|F|WISPR_LINUX_HELPER_BRANCH"
