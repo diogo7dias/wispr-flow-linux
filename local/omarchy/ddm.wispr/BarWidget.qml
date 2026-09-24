@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -8,9 +9,14 @@ import qs.Ui
 //
 // State comes from $XDG_RUNTIME_DIR/wispr-flow/status.json, published by the
 // app's main bundle (scripts/patches/status-broadcast.cjs in the wispr-flow-linux
-// fork). Idle is a hairline; listening follows the microphone level the app
-// already computes for its own pill; transcribing is a travelling wave; a click
-// copies the last transcription.
+// fork). Idle is a hairline; listening is five columns travelling; transcribing
+// is a rotating circle; a click copies the last transcription.
+//
+// The app's published level is not usable as an amplitude: measured on this
+// machine it sits at 1.0 whether the room is silent or loud, which pinned the
+// bars at full height and read as a still image. Motion is therefore drawn on a
+// timer, and the level only nudges the size, so the slot always looks alive
+// while Flow is working.
 BarWidget {
   id: root
   moduleName: "ddm.wispr"
@@ -20,13 +26,14 @@ BarWidget {
   readonly property bool showIdle: setting("showIdle", true) !== false
   readonly property int slot: 16
   readonly property int barWidth: 2
-  readonly property var shape: [0.45, 0.8, 1.0, 0.8, 0.45]
+  readonly property int barCount: 5
+  readonly property var shape: [0.55, 0.85, 1.0, 0.85, 0.55]
 
   property string state: "idle"
   property real level: 0
   property string text: ""
   property var pasted: null
-  property real pulse: 0
+  property real wavePhase: 0
   property bool copied: false
 
   readonly property bool listening: state === "listening"
@@ -36,12 +43,14 @@ BarWidget {
   readonly property color tone: failed ? Color.urgent
     : (copied || running ? Color.accent : button.foreground)
 
-  // The smoothed, exaggerated level the bars follow.
-  readonly property real shown: {
-    var scaled = level * gain
-    if (scaled > 1) scaled = 1
-    return Math.pow(scaled, 0.7)
-  }
+  // Ever only a nudge: 0.6 travel when the level says nothing, full when it does.
+  readonly property real amplitude: 0.6 + 0.4 * Math.max(0, Math.min(1, level * gain))
+
+  // The phase is stepped by a timer rather than a NumberAnimation: the bars are
+  // bound through a helper property, and an animation on the property left them
+  // frozen at their start height in practice. Twenty steps of 32 ms is one
+  // 640 ms pass.
+  readonly property real waveStep: 0.05
 
   // The app hands the helper a boundary space it needs for pasting; the
   // clipboard copy and the tooltip both want the sentence itself.
@@ -88,13 +97,13 @@ BarWidget {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  // Drives the transcribing wave; only runs while Flow is working.
-  NumberAnimation on pulse {
-    running: root.transcribing
-    loops: Animation.Infinite
-    from: 0
-    to: 1
-    duration: 900
+  // Drives the listening travel: short enough to read as movement, long enough
+  // not to flicker at icon size.
+  Timer {
+    interval: 32
+    running: root.listening
+    repeat: true
+    onTriggered: root.wavePhase = (root.wavePhase + root.waveStep) % 1
   }
 
   BarIconButton {
@@ -135,42 +144,76 @@ BarWidget {
         }
       }
 
-      // Listening and transcribing: five columns inside the same footprint as
-      // the bar's other glyphs.
+      // Listening: five columns with a wave travelling across them.
       Row {
-        visible: root.running
+        visible: root.listening
         anchors.centerIn: parent
-        spacing: (root.slot - 5 * root.barWidth) / 4
+        spacing: (root.slot - root.barCount * root.barWidth) / (root.barCount - 1)
 
         Repeater {
-          model: 5
+          model: root.barCount
 
           Item {
             width: root.barWidth
             height: root.slot
+
+            // Per-bar so the height binding depends on wavePhase directly,
+            // instead of through a helper function.
+            property real travel: {
+              var phase = (root.wavePhase + index * 0.14) % 1
+              if (phase < 0) phase += 1
+              return 1 - Math.abs(phase * 2 - 1)
+            }
 
             Rectangle {
               anchors.centerIn: parent
               width: root.barWidth
               radius: root.barWidth / 2
               color: root.tone
-              height: {
-                if (root.listening) return Math.max(2, 2 + 12 * root.shown * root.shape[index])
-                // Transcribing: a wave travelling left to right, always moving.
-                var phase = (root.pulse + index / 5) % 1
-                var wave = 1 - Math.abs(phase * 2 - 1)
-                return Math.max(2, 2 + 13 * (0.25 + 0.75 * wave))
-              }
+              height: Math.max(2.5,
+                2.5 + 12 * travel * root.shape[index] * root.amplitude)
 
               Behavior on height {
-                enabled: root.listening
-                NumberAnimation { duration: 90; easing.type: Easing.OutCubic }
+                NumberAnimation { duration: 70; easing.type: Easing.OutCubic }
               }
               Behavior on color {
                 ColorAnimation { duration: 140 }
               }
             }
           }
+        }
+      }
+
+      // Transcribing: a ring with a gap, spinning.
+      Shape {
+        id: spinner
+        visible: root.transcribing
+        anchors.centerIn: parent
+        width: 15
+        height: 15
+
+        ShapePath {
+          strokeColor: root.tone
+          strokeWidth: 2
+          fillColor: "transparent"
+          capStyle: ShapePath.RoundCap
+
+          PathAngleArc {
+            centerX: spinner.width / 2
+            centerY: spinner.height / 2
+            radiusX: spinner.width / 2 - 1
+            radiusY: spinner.height / 2 - 1
+            startAngle: 0
+            sweepAngle: 275
+          }
+        }
+
+        NumberAnimation on rotation {
+          running: root.transcribing
+          loops: Animation.Infinite
+          from: 0
+          to: 360
+          duration: 850
         }
       }
 

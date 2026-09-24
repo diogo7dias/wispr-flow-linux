@@ -1,8 +1,11 @@
 # ddm.wispr -- Flow's dictation state in the Omarchy bar
 
 The surviving indicator for Wispr Flow's dictation. The app's own bottom-centre
-status pill is parked on the hidden `special:wispr-hidden` workspace instead of
-being shown, so this widget is the only place dictation state appears.
+status pill is never drawn: it is parked on the hidden `special:wispr-hidden`
+workspace with `opacity = "0 0"`. Parking alone was not enough -- Hyprland
+renders pinned floats even while their workspace is hidden, and the app can
+re-show the pill on the active workspace, so both halves are needed. The window
+stays mapped, which is what keeps its `status:*` IPC flowing.
 
 ## Where it sits
 
@@ -19,10 +22,18 @@ glyphs rather than a guest.
 | Flow state              | Drawing                                            |
 | ----------------------- | -------------------------------------------------- |
 | idle                    | a hairline, 12 of the 16 logical px, 0.55 opacity  |
-| listening               | five columns driven by the app's live level        |
-| transcribing            | the same five columns running a travelling wave    |
-| error                   | hairline or bars in `Color.urgent`                 |
+| listening               | five columns with a wave travelling across them    |
+| transcribing            | a ring with a gap, spinning once per 850 ms        |
+| error                   | hairline, bars or ring in `Color.urgent`           |
 | click                   | a check glyph for 900 ms, then back to the haircut |
+
+The app's published `level` is not usable as an amplitude: measured here it sits
+at 1.0 whether the room is silent or loud, which pinned the bars at full height
+and read as a still image. Motion is therefore drawn on a timer (20 steps of
+32 ms per pass) and the level only nudges the size, so the slot is always alive
+while Flow is working. The phase is stepped by a `Timer` rather than a
+`NumberAnimation`: with the height bound through a helper property, an animation
+on `wavePhase` left every bar frozen at its start height.
 
 Left click copies the last transcription to the clipboard with `wl-copy` and
 trims the boundary space the helper needs when pasting. The tooltip carries the
@@ -53,6 +64,14 @@ appears when the app itself reports `error`. Click-to-copy does not depend on it
 A restart is required: quickshell logs `Local plugin changed, reloading` when the
 plugin directory changes, but the bar keeps the running widget instance, so a
 hot edit only takes effect after `omarchy-restart-shell`.
+
+## Retiring the pill
+
+The window rule lives in `~/.config/hypr/hyprland.lua` (not in this repo):
+`workspace = "special:wispr-hidden"` plus `opacity = "0 0"`, matching
+`initial_title = "^Flow Status Indicator$"`. Leaving `pin = true` on it puts the
+pill back on screen over every workspace. After editing the rule, `hyprctl
+reload` and restart Flow: window rules are applied when a window is mapped.
 
 ## Rebuilding the app side
 
