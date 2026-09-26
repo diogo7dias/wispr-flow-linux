@@ -1,12 +1,8 @@
 # AGENTS.md
 
 <!--
-  This file is read by AI tools that support the agents.md vendor-neutral
-  standard. The content below is duplicated in CLAUDE.md (read by Claude
-  Code) so that contributors using either receive the same instructions
-  without needing to cross-reference. Keep CLAUDE.md and AGENTS.md
-  byte-identical below the H1 title (the sync-policy comment above is the
-  one place they intentionally differ) — if you edit one, edit the other.
+  The single instruction file for every AI tool. CLAUDE.md is a symlink to
+  it (Claude Code only reads that name), so there is nothing to keep in sync.
 -->
 
 ## Required reading
