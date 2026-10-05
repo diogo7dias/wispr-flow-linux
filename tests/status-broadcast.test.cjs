@@ -36,7 +36,7 @@ function load({runtimeDir, electron, spawn} = {}) {
     },
     renameSync: (from, to) => fs.renameSync(from, to),
   };
-  const childProcess = spawn ? {spawn} : require('node:child_process');
+  const childProcess = {spawn: spawn || (() => ({on() {}, unref() {}}))};
   const originalSpawn = childProcess.spawn;
   const sandbox = {
     process: {
@@ -151,7 +151,7 @@ test('channel traffic drives state, level and the write cadence', async () => {
         writeFileSync: (target, body, options) => { writes.push({target, body}); },
         renameSync: () => {},
       },
-      os, path, childProcess: require('node:child_process'), electron: {},
+      os, path, childProcess: {spawn: () => ({on() {}, unref() {}})}, electron: {},
     });
     bridge.publish(true);
     assert.equal(writes.length, 1, 'an idle publish lands immediately');
@@ -180,7 +180,7 @@ test('a new recording clears the previous transcript and outcome', () => {
   const {api} = load();
   const bridge = api.create({
     fs: {mkdirSync() {}, writeFileSync() {}, renameSync() {}},
-    os, path, childProcess: require('node:child_process'), electron: {},
+    os, path, childProcess: {spawn: () => ({on() {}, unref() {}})}, electron: {},
   });
   bridge.applyMessage({type: 'text', text: 'first sentence'});
   bridge.applyMessage({type: 'outcome', success: true});
@@ -199,7 +199,7 @@ test('an unwritable runtime dir leaves state intact', () => {
       writeFileSync() {},
       renameSync() {},
     },
-    os, path, childProcess: require('node:child_process'), electron: {},
+    os, path, childProcess: {spawn: () => ({on() {}, unref() {}})}, electron: {},
   });
   bridge.applyMessage({type: 'text', text: 'still here'});
   assert.equal(bridge.state.text, 'still here');
@@ -211,7 +211,7 @@ test('the webContents patch calls the original send through intact', () => {
   const proto = {send(channel, value) { calls.push([channel, value]); return 'sent'; }};
   const bridge = api.create({
     fs: {mkdirSync() {}, writeFileSync() {}, renameSync() {}},
-    os, path, childProcess: require('node:child_process'), electron: {},
+    os, path, childProcess: {spawn: () => ({on() {}, unref() {}})}, electron: {},
   });
   bridge.patchWebContents(Object.create(proto));
   assert.equal(proto.send('status:dictationStatus', 'listening'), 'sent');
@@ -283,4 +283,131 @@ test('install wires the electron app and publishes an initial snapshot', () => {
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }
+});
+function soundBridge() {
+  const {api} = load();
+  const calls = [];
+  const events = require('node:events');
+  const helper = new events.EventEmitter();
+  helper.stdin = {write() { return true; }};
+  helper.stdio = [null, null, null, new events.EventEmitter()];
+  const childProcess = {spawn(command, args, options) {
+    if (command.endsWith('wispr-flow-linux-helper')) return helper;
+    const child = new events.EventEmitter();
+    child.unref = () => { child.unreferenced = true; };
+    calls.push({command, args: plain(args), options: plain(options), child});
+    return child;
+  }};
+  const bridge = api.create({
+    fs: {mkdirSync() {}, writeFileSync() {}, renameSync() {}},
+    os, path, childProcess, electron: {},
+  });
+  bridge.patchSpawn();
+  childProcess.spawn('/opt/wispr/wispr-flow-linux-helper');
+  const names = () => calls.map(call => path.basename(call.args[2]));
+  const request = uuid => helper.stdin.write(frame({
+    HelperAPIRequest: {uuid, PasteText: {payload: {text: 'spoken text'}}},
+  }));
+  const response = body => helper.stdio[3].emit('data', frame({HelperAPIResponse: body}));
+  return {bridge, calls, helper, names, request, response};
+}
+
+test('sound cues follow actual listening transitions once across windows', () => {
+  const {bridge, calls, names} = soundBridge();
+  const proto = {send() { return 'sent'; }};
+  const first = Object.create(proto);
+  const second = Object.create(proto);
+  bridge.patchWebContents(first);
+  bridge.patchWebContents(second);
+  bridge.publish(true);
+  first.send('status:dictationStatus', 'idle');
+  first.send('status:dictationStatus', 'initializing');
+  second.send('status:dictationStatus', 'initializing');
+  assert.deepEqual(names(), [], 'boot and initialization are silent');
+  first.send('status:dictationStatus', 'listening');
+  second.send('status:dictationStatus', 'listening');
+  first.send('status:audioLevel', 0.8);
+  assert.deepEqual(names(), ['start.wav']);
+  first.send('status:dictationStatus', 'stopping');
+  second.send('status:dictationStatus', 'stopping');
+  first.send('status:dictationStatus', 'processing');
+  first.send('status:dictationStatus', 'idle');
+  assert.deepEqual(names(), ['start.wav', 'stop.wav']);
+  assert.equal(calls[0].command, 'pw-play');
+  assert.deepEqual(calls[0].args, ['--volume', '0.45',
+    path.join(os.homedir(), '.local', 'share', 'wispr-flow', 'sounds', 'start.wav')]);
+  assert.deepEqual(calls[0].options, {detached: true, stdio: 'ignore'});
+  assert.equal(calls[0].child.unreferenced, true);
+  assert.doesNotThrow(() => calls[0].child.emit('error', new Error('missing sound')));
+});
+
+test('paste cue requires a matching successful helper ACK and is not repeated', () => {
+  const {bridge, names, request, response} = soundBridge();
+  request('paste-1');
+  assert.deepEqual(names(), [], 'a request does not confirm paste');
+  response({ACK: true, uuid: 'keepalive'});
+  assert.equal(bridge.state.pasted, null);
+  response({ACK: true, uuid: 'paste-1'});
+  assert.equal(bridge.state.pasted, true);
+  assert.deepEqual(names(), ['pasted.wav']);
+  response({ACK: true, uuid: 'paste-1'});
+  request('paste-1');
+  response({ACK: true, uuid: 'paste-1'});
+  assert.deepEqual(names(), ['pasted.wav'], 'repeated request and response are silent');
+  request('paste-2');
+  response({HelperAPIError: {payload: {message: 'paste failed'}}, uuid: 'paste-2'});
+  assert.equal(bridge.state.pasted, false);
+  response({ACK: true, uuid: 'paste-2'});
+  request('paste-3');
+  response({ACK: false, uuid: 'paste-3'});
+  assert.equal(bridge.state.pasted, false);
+  assert.deepEqual(names(), ['pasted.wav']);
+});
+
+test('new recording and helper exit discard pending paste confirmations', () => {
+  const {bridge, helper, names, request, response} = soundBridge();
+  request('old-paste');
+  bridge.applyChannel('status:dictationStatus', 'listening');
+  response({ACK: true, uuid: 'old-paste'});
+  assert.deepEqual(names(), ['start.wav']);
+  request('new-paste');
+  helper.emit('exit', 1);
+  response({ACK: true, uuid: 'new-paste'});
+  assert.deepEqual(names(), ['start.wav']);
+});
+
+test('paste cues require a UUID and ignore superseded requests', () => {
+  const {bridge, names, request, response} = soundBridge();
+  request(undefined);
+  response({ACK: true});
+  assert.equal(bridge.state.pasted, null);
+  request('earlier');
+  request('latest');
+  response({ACK: true, uuid: 'earlier'});
+  assert.equal(bridge.state.pasted, null);
+  assert.deepEqual(names(), []);
+  response({ACK: true, uuid: 'latest'});
+  assert.deepEqual(names(), ['pasted.wav']);
+});
+
+test('legacy paste outcomes remain visible without announcing an uncorrelated paste', () => {
+  const {bridge, names, response} = soundBridge();
+  response({PasteOutcome: {payload: {success: true}}});
+  assert.equal(bridge.state.pasted, true);
+  response({PasteBlocked: {payload: {reason: 'locked'}}});
+  assert.equal(bridge.state.pasted, false);
+  assert.deepEqual(names(), []);
+});
+
+test('a synchronous audio spawn failure does not interrupt status or paste updates', () => {
+  const {api} = load();
+  const bridge = api.create({
+    fs: {mkdirSync() {}, writeFileSync() {}, renameSync() {}},
+    os, path, childProcess: {spawn() { throw new Error('pw-play unavailable'); }}, electron: {},
+  });
+  assert.doesNotThrow(() => bridge.applyChannel('status:dictationStatus', 'listening'));
+  assert.equal(bridge.state.state, 'listening');
+  bridge.applyMessage({type: 'text', text: 'hello', uuid: 'paste'});
+  assert.doesNotThrow(() => bridge.applyMessage({type: 'ack', uuid: 'paste', success: true}));
+  assert.equal(bridge.state.pasted, true);
 });
