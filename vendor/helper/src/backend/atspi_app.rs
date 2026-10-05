@@ -50,6 +50,7 @@
 //! games expose nothing, so their fields may be empty — we degrade gracefully
 //! and never panic. The shape mirrors `kwin::KwinTracker` / `gnome::GnomeTracker`.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -58,8 +59,11 @@ use atspi::connection::AccessibilityConnection;
 use atspi::events::object::ObjectEvents;
 use atspi::events::window::WindowEvents;
 use atspi::proxy::accessible::{AccessibleProxy, ObjectRefExt};
-use atspi::{Event, ObjectRef, Role, State};
-use zbus::export::futures_util::stream::StreamExt;
+use atspi::{AtspiError, Event, ObjectRef, Role, State};
+use zbus::export::futures_util::{
+    future::{select, Either},
+    stream::{Stream, StreamExt},
+};
 use zbus::Connection;
 
 use super::{active_app_payload, ActiveApp, EventSink, RunningApp};
@@ -401,48 +405,99 @@ async fn watch_loop(shared: &Arc<Shared>, stop: &Arc<AtomicBool>) {
 
     let conn = a11y.connection().clone();
     let mut events = std::pin::pin!(a11y.event_stream());
+    let mut pending = None;
 
     loop {
-        // Wake periodically even with no events so a dropped tracker exits
-        // reasonably promptly instead of blocking on the stream forever.
-        let next = match tokio::time::timeout(Duration::from_millis(500), events.next()).await {
-            Ok(Some(ev)) => ev,
-            Ok(None) => {
-                log::debug!("atspi watcher: event stream ended");
-                break;
-            }
-            Err(_) => {
-                if stop.load(Ordering::Relaxed) {
+        let source = if let Some(source) = pending.take() {
+            source
+        } else {
+            // Wake periodically even with no events so a dropped tracker exits
+            // reasonably promptly instead of blocking on the stream forever.
+            let next = match tokio::time::timeout(Duration::from_millis(500), events.next()).await {
+                Ok(Some(ev)) => ev,
+                Ok(None) => {
+                    log::debug!("atspi watcher: event stream ended");
                     break;
                 }
-                continue;
+                Err(_) => {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let ev = match next {
+                Ok(ev) => ev,
+                Err(e) => {
+                    log::debug!("atspi watcher: bad event: {e}");
+                    continue;
+                }
+            };
+
+            // The source object: window for Activate, widget for state-changed.
+            match interesting_source(&ev) {
+                Some(s) => s,
+                None => continue,
             }
         };
+
+        let (app, latest) =
+            resolve_while_draining(&mut events, resolve_active_app(&conn, &source), stop).await;
+        pending = latest;
         if stop.load(Ordering::Relaxed) {
             break;
         }
-
-        let ev = match next {
-            Ok(ev) => ev,
-            Err(e) => {
-                log::debug!("atspi watcher: bad event: {e}");
-                continue;
-            }
+        let Some(app) = app else {
+            continue;
         };
-
-        // The source object: window for Activate, widget for state-changed.
-        let source = match interesting_source(&ev) {
-            Some(s) => s,
-            None => continue,
-        };
-
-        let app = resolve_active_app(&conn, &source).await;
         // Skip totally-empty resolutions (apps with no a11y at all) so we don't
         // overwrite a good cached app with a blank one.
         if app.app_name.is_empty() && app.bundle_id.is_empty() && app.window_title.is_empty() {
             continue;
         }
         shared.on_focus(app);
+    }
+}
+
+// zbus stops reading the socket when a MessageStream queue fills. Keep consuming
+// events while querying the same connection, or the awaited reply can never arrive.
+async fn resolve_while_draining<S, F>(
+    events: &mut S,
+    resolution: F,
+    stop: &AtomicBool,
+) -> (Option<ActiveApp>, Option<ObjectRef>)
+where
+    S: Stream<Item = Result<Event, AtspiError>> + Unpin,
+    F: Future<Output = ActiveApp>,
+{
+    let mut resolution = std::pin::pin!(tokio::time::timeout(PROBE_TIMEOUT, resolution));
+    let mut latest = None;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return (None, None);
+        }
+        let next = std::pin::pin!(tokio::time::timeout(
+            Duration::from_millis(500),
+            events.next()
+        ));
+        match select(resolution.as_mut(), next).await {
+            Either::Left((Ok(app), _)) => return (Some(app), latest),
+            Either::Left((Err(_), _)) => {
+                log::debug!("atspi watcher: focus resolution timed out");
+                return (None, latest);
+            }
+            Either::Right((Ok(Some(Ok(event))), _)) => {
+                if let Some(source) = interesting_source(&event) {
+                    latest = Some(source);
+                }
+            }
+            Either::Right((Ok(None), _)) => return (None, None),
+            Either::Right((Ok(Some(Err(_))) | Err(_), _)) => {}
+        }
     }
 }
 
@@ -693,4 +748,143 @@ async fn enumerate_apps() -> Vec<RunningApp> {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Command, Stdio};
+    use zbus::MessageStream;
+
+    struct TestBus(Child);
+
+    impl Drop for TestBus {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    async fn signal_burst_then_query(sender: &Connection, client: &Connection) -> ActiveApp {
+        for _ in 0..128 {
+            sender
+                .emit_signal(
+                    client.unique_name(),
+                    "/org/wisprflow/Test",
+                    "org.wisprflow.Test",
+                    "Burst",
+                    &(),
+                )
+                .await
+                .unwrap();
+        }
+        // A round trip on the sender orders the entire burst before the
+        // client's query, regardless of how the bus schedules its sockets.
+        sender
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "GetId",
+                &(),
+            )
+            .await
+            .unwrap();
+        let reply = client
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "GetId",
+                &(),
+            )
+            .await
+            .unwrap();
+        ActiveApp {
+            app_name: reply.body().deserialize::<String>().unwrap(),
+            ..ActiveApp::default()
+        }
+    }
+
+    #[test]
+    fn focus_resolution_drains_bursts_before_awaited_reply() {
+        let mut bus = TestBus(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("private test bus requires dbus-daemon"),
+        );
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let client = zbus::connection::Builder::address(address.trim())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let sender = zbus::connection::Builder::address(address.trim())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let mut events = MessageStream::from(&client).map(|message| {
+                let message = message.map_err(AtspiError::from)?;
+                Event::try_from(&message)
+            });
+            assert_eq!(client.max_queued(), 64);
+
+            // Reproduce the old watcher: stop consuming events while awaiting
+            // a method reply on their connection. The 128-signal burst wedges it.
+            assert!(tokio::time::timeout(
+                Duration::from_millis(100),
+                signal_burst_then_query(&sender, &client),
+            )
+            .await
+            .is_err());
+
+            let (app, _) = resolve_while_draining(
+                &mut events,
+                signal_burst_then_query(&sender, &client),
+                &AtomicBool::new(false),
+            )
+            .await;
+            assert!(!app
+                .expect("draining must unblock the method reply")
+                .app_name
+                .is_empty());
+        });
+    }
+
+    #[test]
+    fn focus_resolution_stops_and_times_out() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut events = zbus::export::futures_util::stream::pending();
+            let (app, _) = resolve_while_draining(
+                &mut events,
+                std::future::pending::<ActiveApp>(),
+                &AtomicBool::new(true),
+            )
+            .await;
+            assert!(app.is_none());
+            let (app, _) = resolve_while_draining(
+                &mut events,
+                std::future::pending::<ActiveApp>(),
+                &AtomicBool::new(false),
+            )
+            .await;
+            assert!(app.is_none());
+        });
+    }
 }
