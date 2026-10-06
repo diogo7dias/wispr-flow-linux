@@ -9,7 +9,7 @@ import qs.Ui
 //
 // State comes from $XDG_RUNTIME_DIR/wispr-flow/status.json, published by the
 // app's main bundle (scripts/patches/status-broadcast.cjs in the wispr-flow-linux
-// fork). Idle is a hairline; listening is five columns travelling; transcribing
+// fork). Idle reads Wispr; listening is five columns travelling; transcribing
 // is a rotating circle; a click copies the last transcription.
 //
 // The app's published level is not usable as an amplitude: measured on this
@@ -106,11 +106,19 @@ BarWidget {
     onTriggered: root.wavePhase = (root.wavePhase + root.waveStep) % 1
   }
 
+  TextMetrics {
+    id: idleLabelMetrics
+    text: "Wispr"
+    font.family: button.fontFamily
+    font.pixelSize: Style.font.body
+  }
+
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    slotSize: Style.bar.statusSlot
+    slotSize: Math.max(Style.bar.statusSlot,
+      Math.ceil(idleLabelMetrics.width) + scaledHorizontalMargin * 2)
     text: ""
     tooltipText: root.tip
     iconComponent: visuals
@@ -126,19 +134,14 @@ BarWidget {
       id: canvas
       anchors.fill: parent
 
-      // Idle: a hairline. Nothing else in the slot moves until Flow does.
-      Rectangle {
+      Text {
         visible: !root.running && !root.copied
         anchors.centerIn: parent
-        width: Math.round(root.slot * 0.75)
-        height: 1.5
-        radius: height / 2
+        text: "Wispr"
         color: root.tone
-        opacity: root.failed ? 0.9 : (button.tooltipHovered ? 0.85 : 0.55)
+        font: idleLabelMetrics.font
+        renderType: Text.NativeRendering
 
-        Behavior on opacity {
-          NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-        }
         Behavior on color {
           ColorAnimation { duration: 140 }
         }
