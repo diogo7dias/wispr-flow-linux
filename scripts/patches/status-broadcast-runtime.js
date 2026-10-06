@@ -4,10 +4,9 @@
 // scripts/patches/status-broadcast.cjs. It publishes Wispr Flow's dictation
 // state for the Omarchy bar widget (local/omarchy/ddm.wispr).
 //
-// Every hook calls the original implementation through, nothing
+// OBSERVE ONLY. Every hook calls the original implementation through, nothing
 // is written on the app's behalf, and no account file, database, clipboard,
-// helper socket or log is read. Short sound cues accompany confirmed state
-// transitions and completed pastes. The status output is
+// helper socket or log is read. The single output is
 // $XDG_RUNTIME_DIR/wispr-flow/status.json, mode 0600:
 //
 //   state   idle | listening | transcribing | error
@@ -70,12 +69,7 @@
       if (!body || typeof body !== 'object') continue;
       if (direction === 'out' && body.PasteText) {
         var payload = body.PasteText.payload || {};
-        var message = {type: 'text', text: String(payload.text == null ? '' : payload.text)};
-        if (typeof body.uuid === 'string' && body.uuid) message.uuid = body.uuid;
-        onMessage(message);
-      } else if (direction === 'in' && envelope.HelperAPIResponse &&
-          (body.ACK === true || body.ACK === false || body.HelperAPIError)) {
-        onMessage({type: 'ack', uuid: body.uuid, success: body.ACK === true && !body.HelperAPIError});
+        onMessage({type: 'text', text: String(payload.text == null ? '' : payload.text)});
       } else if (body.PasteOutcome) {
         var outcome = body.PasteOutcome.payload || {};
         onMessage({type: 'outcome', success: outcome.success === true});
@@ -99,22 +93,6 @@
     var lastLevelWrite = 0;
     var patchedWindow = false;
     var patchedSpawn = false;
-    var listening = false;
-    var pendingPasteUuid = null;
-    var lastPasteUuid = null;
-    var soundDirectory = path.join(os.homedir(), '.local', 'share', 'wispr-flow', 'sounds');
-
-    function playSound(name) {
-      try {
-        var child = childProcess.spawn('pw-play',
-          ['--volume', '0.45', path.join(soundDirectory, name + '.wav')],
-          {detached: true, stdio: 'ignore'});
-        child.on('error', function () {});
-        child.unref();
-      } catch (error) {
-        // Sound playback must never interrupt dictation.
-      }
-    }
 
     function publish(force) {
       var now = Date.now();
@@ -134,15 +112,6 @@
       if (message.type === 'text') {
         state.text = message.text.slice(0, TEXT_LIMIT);
         state.pasted = null;
-        var uuid = typeof message.uuid === 'string' && message.uuid ? message.uuid : null;
-        if (uuid !== lastPasteUuid) pendingPasteUuid = uuid;
-        lastPasteUuid = uuid;
-        publish(true);
-      } else if (message.type === 'ack') {
-        if (!pendingPasteUuid || message.uuid !== pendingPasteUuid) return;
-        pendingPasteUuid = null;
-        state.pasted = message.success === true;
-        if (state.pasted) playSound('pasted');
         publish(true);
       } else if (message.type === 'outcome') {
         state.pasted = message.success;
@@ -152,15 +121,6 @@
 
     function applyChannel(channel, value) {
       if (channel === 'status:dictationStatus') {
-        var nextListening = value === 'listening';
-        if (nextListening !== listening) {
-          listening = nextListening;
-          if (listening) {
-            pendingPasteUuid = null;
-            lastPasteUuid = null;
-          }
-          playSound(listening ? 'start' : 'stop');
-        }
         var next = mapState(value);
         if (next === state.state) return;
         state.state = next;
@@ -205,14 +165,6 @@
         var child = spawn.apply(this, arguments);
         try {
           if (!child || !/wispr-flow-linux-helper$/.test(String(command))) return child;
-          pendingPasteUuid = null;
-          lastPasteUuid = null;
-          if (typeof child.on === 'function') {
-            child.on('exit', function () {
-              pendingPasteUuid = null;
-              lastPasteUuid = null;
-            });
-          }
           var outbound = '';
           var inbound = '';
           if (child.stdin && typeof child.stdin.write === 'function') {
