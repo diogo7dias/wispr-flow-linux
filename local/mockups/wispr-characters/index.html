@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wispr · 10 character animations</title>
+<style>
+:root{color-scheme:dark;--paper:#111110;--ink:#e6e1d5;--muted:#a29d92;--line:#34312d;--accent-bg:#8dd8da;--accent-ink:#111110;font-family:"JetBrains Mono",ui-monospace,"SFMono-Regular",Consolas,monospace}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink)}main{max-width:1080px;margin:auto;padding:48px 28px}header{display:flex;justify-content:space-between;align-items:start;gap:20px}.eyebrow{color:var(--muted);font-size:11px;letter-spacing:2px}h1{font-size:clamp(24px,5vw,38px);font-weight:500;letter-spacing:-1.5px;margin:12px 0}p{color:var(--muted);font-size:12px;line-height:1.7;margin:8px 0}button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,input:focus-visible{outline:2px solid var(--accent-bg);outline-offset:4px}.controls{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:28px 0 24px}#toggle{border:0;border-radius:3px;padding:10px 14px;background:var(--accent-bg);color:var(--accent-ink);font-size:12px;min-width:150px}label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:10px}input{accent-color:var(--accent-bg);width:110px}output{min-width:34px}.stage{border:1px solid var(--line);padding:22px 22px 18px;margin-bottom:24px;background:#191817}.stage-title{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;letter-spacing:1px;margin-bottom:20px}.bar{height:30px;display:flex;align-items:center;justify-content:space-between;font-size:13px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 10px;gap:12px}.bar-side{color:var(--muted);font-size:11px}.word{display:inline-block;white-space:pre;width:5ch;text-align:center;font-variant-ligatures:none;line-height:1.2}.bar-center{display:flex;gap:28px;align-items:center}.status-dot{height:5px;width:5px;background:var(--accent-bg);display:inline-block;border-radius:50%;margin-right:7px}.idle .status-dot{background:var(--muted)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{text-align:left;border:1px solid var(--line);background:transparent;border-radius:3px;min-height:168px;padding:18px 20px;transition:border-color .15s,background .15s}.card:hover{background:#1e1c19}.card[aria-pressed=true]{border-color:var(--accent-bg);background:#1b2321}.card-head{display:flex;align-items:center;gap:12px;font-size:12px}.number{color:var(--muted);font-size:11px}.chosen{margin-left:auto;color:var(--accent-bg);font-size:10px;visibility:hidden}.card[aria-pressed=true] .chosen{visibility:visible}.sample{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:26px 0 16px}.large{font-size:34px;letter-spacing:0}.small{font-size:13px;color:var(--muted);padding:5px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.description{color:var(--muted);font-size:11px;line-height:1.6}footer{display:flex;justify-content:space-between;gap:20px;margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}@media(max-width:600px){main{padding:28px 16px}.grid{grid-template-columns:1fr}.bar-side{display:none}.bar{justify-content:center}.stage{padding:18px 12px}header{display:block}.sample{margin:22px 0 14px}footer{flex-direction:column;gap:8px}}
+</style>
+<main>
+<header><div><div class="eyebrow">OMARCHY / WISPR / MOTION STUDY</div><h1>Letters with a pulse.</h1><p>Ten ways for <span style="color:var(--ink)">Wispr</span> to scramble while listening.<br>Small samples match bar size. Click an option to try it above.</p></div><p>01 — 10<br>Character effects only.</p></header>
+<div class="controls"><button id="toggle" aria-pressed="true">Listening · on</button><label>Speed <input id="speed" type="range" min="0.5" max="2.5" step="0.25" value="1" aria-label="Animation speed"><output id="speed-value">1×</output></label><span id="state" style="font-size:11px;color:var(--muted)"><span class="status-dot"></span>All previews live</span></div>
+<section class="stage" aria-label="Selected animation at bar size"><div class="stage-title"><span>IN THE BAR</span><span id="selection">01 / Cipher flicker</span></div><div class="bar"><span class="bar-side">1 2 3 4 5</span><span class="bar-center"><span style="color:var(--muted)">Thursday 12:34</span><span id="hero" class="word">Wispr</span></span><span class="bar-side">78% · 80</span></div></section>
+<div class="grid" id="grid"></div>
+<footer><span>Idle always returns to “Wispr”. No sound.</span><span>My pick: 03 for clarity, 08 for attitude.</span></footer>
+</main>
+<script>
+const base='Wispr', symbols='!@#$%&*+=?/<>', runes='░▒▓╳╱╲┼╬◈◇', digits='0123456789';
+const variants=[
+ ['Cipher flicker','All five letters turn to quick, shifting symbols.'],
+ ['Digital rain','A ripple of characters falls across the word.'],
+ ['Scanner','One letter scrambles at a time. The name stays readable.'],
+ ['Decode loop','Noise resolves into Wispr, then scrambles again.'],
+ ['Slot machine','Letters roll through a mechanical character cycle.'],
+ ['Binary pulse','A quick pulse of zeroes and ones passes through.'],
+ ['Signal code','Each letter becomes a short dot-and-dash pattern.'],
+ ['Glitch bursts','Wispr holds steady between sharp flashes of corruption.'],
+ ['Rune shuffle','Dense linework and strange glyphs cycle through the name.'],
+ ['Terminal rewrite','Erase, scramble, and type Wispr back into place.']
+];
+let selected=0,listening=!matchMedia('(prefers-reduced-motion: reduce)').matches,speed=1;
+const grid=document.getElementById('grid');
+variants.forEach(([name,description],index)=>{
+ const card=document.createElement('button');card.className='card';card.setAttribute('aria-pressed',index===selected);card.setAttribute('aria-label',`${index+1}. ${name}`);
+ card.innerHTML=`<div class="card-head"><span class="number">${String(index+1).padStart(2,'0')}</span><span>${name}</span><span class="chosen">SELECTED</span></div><div class="sample" aria-hidden="true"><span class="word large">Wispr</span><span class="word small">Wispr</span></div><div class="description">${description}</div>`;
+ card.onclick=()=>{selected=index;document.querySelectorAll('.card').forEach((item,i)=>item.setAttribute('aria-pressed',i===index));document.getElementById('selection').textContent=`${String(index+1).padStart(2,'0')} / ${name}`};grid.append(card);
+});
+const cards=[...document.querySelectorAll('.card')];
+const glyph=(set,t,i,salt=0)=>set[Math.abs(Math.floor(Math.sin(t*7.17+i*12.43+salt*3.1)*10000))%set.length];
+function frame(index,t){
+ const tick=Math.floor(t/65),phase=(t%1800)/1800;
+ return [...base].map((letter,i)=>{
+  switch(index){
+   case 0:return phase>.83?letter:glyph(symbols,tick,i);
+   case 1:{const local=(phase+i*.14)%1;return local<.4?glyph(digits+symbols,tick,i):local<.6?'│':letter}
+   case 2:return Math.floor(t/120)%5===i?glyph(symbols,tick,i):letter;
+   case 3:return phase*7>i+1?letter:glyph(symbols+digits,tick,i);
+   case 4:{const wheel='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';return phase>.75?letter:wheel[(Math.floor(t/45)+i*7)%wheel.length]}
+   case 5:return (Math.floor(t/110)+i)%7<3?glyph('01',tick,i):letter;
+   case 6:return (Math.floor(t/90)+i)%8<5?glyph('·─',tick,i):letter;
+   case 7:return (t%1350<180||t%1350>960&&t%1350<1050)?glyph(symbols+digits,tick,i):letter;
+   case 8:return phase>.82?letter:glyph(runes,tick,i);
+   case 9:{const p=(t%2200)/2200;if(p<.25)return i<5-Math.floor(p*20)?letter:' ';if(p<.4)return i===0?'▌':' ';if(p<.8)return i<Math.floor((p-.4)*12.5)?letter:glyph(symbols,tick,i);return letter}
+  }
+ }).join('');
+}
+function updateControls(){document.body.classList.toggle('idle',!listening);document.getElementById('toggle').textContent=listening?'Listening · on':'Listening · off';document.getElementById('toggle').setAttribute('aria-pressed',listening);document.getElementById('state').innerHTML=`<span class="status-dot"></span>${listening?'All previews live':'Idle · Wispr'}`}
+document.getElementById('toggle').onclick=()=>{listening=!listening;updateControls()};
+document.getElementById('speed').oninput=e=>{speed=Number(e.target.value);document.getElementById('speed-value').textContent=`${speed}×`};
+updateControls();
+let last=0,elapsed=0;
+function animate(now){const delta=last?now-last:0;last=now;if(listening)elapsed+=Math.min(delta,100)*speed;cards.forEach((card,i)=>{const value=listening?frame(i,elapsed):base;card.querySelectorAll('.word').forEach(word=>word.textContent=value)});document.getElementById('hero').textContent=listening?frame(selected,elapsed):base;requestAnimationFrame(animate)}
+requestAnimationFrame(animate);
+</script>
+</html>
