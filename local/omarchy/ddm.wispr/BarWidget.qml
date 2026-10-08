@@ -1,39 +1,22 @@
 import QtQuick
-import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Wispr Flow's dictation state, drawn in the bar's own icon language.
-//
-// State comes from $XDG_RUNTIME_DIR/wispr-flow/status.json, published by the
-// app's main bundle (scripts/patches/status-broadcast.cjs in the wispr-flow-linux
-// fork). Idle reads Wispr; listening is five columns travelling; transcribing
-// is a rotating circle; a click copies the last transcription.
-//
-// The app's published level is not usable as an amplitude: measured on this
-// machine it sits at 1.0 whether the room is silent or loud, which pinned the
-// bars at full height and read as a still image. Motion is therefore drawn on a
-// timer, and the level only nudges the size, so the slot always looks alive
-// while Flow is working.
+// Dictation state comes from the app's status bridge. Listening uses signal
+// code; processing uses rune shuffle. Idle returns to Wispr; click to copy.
 BarWidget {
   id: root
   moduleName: "ddm.wispr"
 
   readonly property string statusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/wispr-flow/status.json"
-  readonly property real gain: Math.max(0.5, Math.min(4, Number(setting("gain", 2.2)) || 2.2))
   readonly property bool showIdle: setting("showIdle", true) !== false
-  readonly property int slot: 16
-  readonly property int barWidth: 2
-  readonly property int barCount: 5
-  readonly property var shape: [0.55, 0.85, 1.0, 0.85, 0.55]
-
   property string state: "idle"
-  property real level: 0
   property string text: ""
   property var pasted: null
-  property real wavePhase: 0
+  property real animationElapsed: 0
+  property real animationLast: 0
   property bool copied: false
 
   readonly property bool listening: state === "listening"
@@ -43,14 +26,31 @@ BarWidget {
   readonly property color tone: failed ? Color.urgent
     : (copied || running ? Color.accent : button.foreground)
 
-  // Ever only a nudge: 0.6 travel when the level says nothing, full when it does.
-  readonly property real amplitude: 0.6 + 0.4 * Math.max(0, Math.min(1, level * gain))
+  readonly property string animatedLabel: {
+    if (!running) return "Wispr"
+    var base = "Wispr"
+    var tick = Math.floor(animationElapsed / 65)
+    var phase = (animationElapsed % 1800) / 1800
+    var result = ""
+    for (var i = 0; i < base.length; i++) {
+      if (listening) {
+        result += (Math.floor(animationElapsed / 90) + i) % 8 < 5
+          ? glyph("·─", tick, i) : base[i]
+      } else {
+        result += phase > 0.82 ? base[i] : glyph("░▒▓╳╱╲┼╬◈◇", tick, i)
+      }
+    }
+    return result
+  }
 
-  // The phase is stepped by a timer rather than a NumberAnimation: the bars are
-  // bound through a helper property, and an animation on the property left them
-  // frozen at their start height in practice. Twenty steps of 32 ms is one
-  // 640 ms pass.
-  readonly property real waveStep: 0.05
+  function glyph(set, tick, index) {
+    return set[Math.abs(Math.floor(Math.sin(tick * 7.17 + index * 12.43) * 10000)) % set.length]
+  }
+
+  onStateChanged: {
+    animationElapsed = 0
+    animationLast = Date.now()
+  }
 
   // The app hands the helper a boundary space it needs for pasting; the
   // clipboard copy and the tooltip both want the sentence itself.
@@ -79,8 +79,6 @@ BarWidget {
     }
     if (!parsed || typeof parsed !== "object") return
     if (typeof parsed.state === "string") root.state = parsed.state
-    if (typeof parsed.level === "number" && isFinite(parsed.level))
-      root.level = Math.max(0, Math.min(1, parsed.level))
     if (typeof parsed.text === "string") root.text = parsed.text
     root.pasted = (parsed.pasted === true || parsed.pasted === false) ? parsed.pasted : null
   }
@@ -97,13 +95,15 @@ BarWidget {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  // Drives the listening travel: short enough to read as movement, long enough
-  // not to flicker at icon size.
   Timer {
-    interval: 32
-    running: root.listening
+    interval: 16
+    running: root.running
     repeat: true
-    onTriggered: root.wavePhase = (root.wavePhase + root.waveStep) % 1
+    onTriggered: {
+      var now = Date.now()
+      root.animationElapsed += Math.min(now - root.animationLast, 100)
+      root.animationLast = now
+    }
   }
 
   TextMetrics {
@@ -135,88 +135,15 @@ BarWidget {
       anchors.fill: parent
 
       Text {
-        visible: !root.running && !root.copied
+        visible: !root.copied
         anchors.centerIn: parent
-        text: "Wispr"
+        text: root.animatedLabel
         color: root.tone
         font: idleLabelMetrics.font
         renderType: Text.NativeRendering
 
         Behavior on color {
           ColorAnimation { duration: 140 }
-        }
-      }
-
-      // Listening: five columns with a wave travelling across them.
-      Row {
-        visible: root.listening
-        anchors.centerIn: parent
-        spacing: (root.slot - root.barCount * root.barWidth) / (root.barCount - 1)
-
-        Repeater {
-          model: root.barCount
-
-          Item {
-            width: root.barWidth
-            height: root.slot
-
-            // Per-bar so the height binding depends on wavePhase directly,
-            // instead of through a helper function.
-            property real travel: {
-              var phase = (root.wavePhase + index * 0.14) % 1
-              if (phase < 0) phase += 1
-              return 1 - Math.abs(phase * 2 - 1)
-            }
-
-            Rectangle {
-              anchors.centerIn: parent
-              width: root.barWidth
-              radius: root.barWidth / 2
-              color: root.tone
-              height: Math.max(2.5,
-                2.5 + 12 * travel * root.shape[index] * root.amplitude)
-
-              Behavior on height {
-                NumberAnimation { duration: 70; easing.type: Easing.OutCubic }
-              }
-              Behavior on color {
-                ColorAnimation { duration: 140 }
-              }
-            }
-          }
-        }
-      }
-
-      // Transcribing: a ring with a gap, spinning.
-      Shape {
-        id: spinner
-        visible: root.transcribing
-        anchors.centerIn: parent
-        width: 15
-        height: 15
-
-        ShapePath {
-          strokeColor: root.tone
-          strokeWidth: 2
-          fillColor: "transparent"
-          capStyle: ShapePath.RoundCap
-
-          PathAngleArc {
-            centerX: spinner.width / 2
-            centerY: spinner.height / 2
-            radiusX: spinner.width / 2 - 1
-            radiusY: spinner.height / 2 - 1
-            startAngle: 0
-            sweepAngle: 275
-          }
-        }
-
-        NumberAnimation on rotation {
-          running: root.transcribing
-          loops: Animation.Infinite
-          from: 0
-          to: 360
-          duration: 850
         }
       }
 
