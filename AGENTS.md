@@ -208,3 +208,7 @@ Use the actual model name (e.g., `Claude Opus 4.8`); keep the split honest. For
 issues/comments use the simplified form
 `Written by Claude <model-name> via [Claude Code](https://claude.ai/code)`. For
 commits, include a `Co-Authored-By: Claude <claude@anthropic.com>` trailer.
+
+## File size limit
+
+- Keep every agent-authored file under 5,000 tokens (bytes / 4, about 20 KB). `.githooks/check-token-limit` blocks staged files over the limit (enable once per clone with `bin/install-git-hooks`); split oversized files by responsibility instead of using `--no-verify`, and list genuinely non-agent files in `.token-limit-ignore`.
