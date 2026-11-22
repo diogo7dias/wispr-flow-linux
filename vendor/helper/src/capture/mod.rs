@@ -21,6 +21,7 @@
 //! both paths converge on the same VK and the same emission code here.
 
 mod evdev;
+pub mod shortcuts;
 mod xinput;
 
 use std::collections::HashSet;
@@ -52,6 +53,17 @@ impl HeldKeys for NoHeldKeys {
 /// handle for stale-key queries. Prefers the no-privilege XInput2 path on a true
 /// X11 session, falling back to evdev (Wayland, or X11 where XInput2 fails).
 pub fn spawn(events: EventSink) -> Box<dyn HeldKeys> {
+    if shortcuts::enabled() {
+        return match shortcuts::start(events) {
+            Ok(held) => held,
+            Err(e) => {
+                log::error!(
+                    "compositor shortcuts unavailable ({e}); refusing raw capture fallback"
+                );
+                Box::new(NoHeldKeys)
+            }
+        };
+    }
     if is_true_x11_session() {
         match xinput::start(events.clone()) {
             Ok(held) => {

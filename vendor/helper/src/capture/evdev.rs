@@ -7,9 +7,11 @@
 //! Without it no device is readable and capture is a no-op (with a warning) —
 //! `wispr-flow --doctor` and the shipped udev rule address this.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -55,19 +57,31 @@ fn bit_set(bitmap: &[u8], code: u16) -> bool {
 }
 
 fn is_event_node(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .is_some_and(|n| n.starts_with("event"))
+    path.file_name().and_then(|s| s.to_str()).is_some_and(|n| {
+        n.strip_prefix("event")
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// True if the open device advertises ordinary keyboard keys (KEY_A..KEY_Z),
 /// which filters out mice, touchpads, and other non-keyboard event nodes.
 fn is_keyboard(fd: libc::c_int) -> bool {
+    // Never capture our injected paste keystrokes as user shortcuts.
+    let mut name = [0u8; 256];
+    if unsafe { libc::ioctl(fd, ioc_read(0x06, 256), name.as_mut_ptr()) } >= 0
+        && is_own_keyboard(&name)
+    {
+        return false;
+    }
     let mut bitmap = [0u8; BITMAP_LEN];
     if unsafe { libc::ioctl(fd, eviocgbit_key(), bitmap.as_mut_ptr()) } < 0 {
         return false;
     }
     bit_set(&bitmap, KEY_A) && bit_set(&bitmap, KEY_Z)
+}
+
+fn is_own_keyboard(name: &[u8]) -> bool {
+    name.starts_with(b"Wispr Flow Linux Helper\0")
 }
 
 /// Open every readable keyboard under `/dev/input`, returning `(path, file)`
@@ -102,27 +116,36 @@ fn open_keyboards() -> Vec<(PathBuf, File)> {
 /// Start evdev capture: one reader thread per keyboard. Returns a [`HeldKeys`]
 /// handle, or `None` when no device is readable (so the caller can fall back).
 pub fn start(events: EventSink) -> Option<Box<dyn HeldKeys>> {
-    let keyboards = open_keyboards();
-    if keyboards.is_empty() {
-        log::warn!(
-            "evdev capture: no readable keyboard under /dev/input — push-to-talk \
-             and the in-app shortcut recorder will NOT work. Run \
-             `wispr-flow --install-udev-rules`, or add the user to the `input` \
-             group (then re-login)."
-        );
-        return None;
-    }
     let index = Arc::new(AtomicU64::new(0));
     let pid = std::process::id();
-    for (path, file) in keyboards {
-        log::info!("evdev capture: watching {}", path.display());
-        let events = events.clone();
-        let index = index.clone();
-        let builder = std::thread::Builder::new().name("key-capture-evdev".to_string());
-        if let Err(e) = builder.spawn(move || read_device(&path, file, &events, &index, pid)) {
-            log::warn!("evdev capture: failed to spawn reader thread: {e}");
-        }
+    let result = std::thread::Builder::new()
+        .name("keyboard-hotplug".into())
+        .spawn(move || {
+            let mut readers: HashMap<(u64, u64), std::thread::JoinHandle<()>> = HashMap::new();
+            loop {
+                readers.retain(|_, thread| !thread.is_finished());
+                for (path, file) in open_keyboards() {
+                    let Ok(meta) = file.metadata() else { continue };
+                    let identity = (meta.rdev(), meta.ino());
+                    if readers.contains_key(&identity) || readers.len() >= 64 {
+                        continue;
+                    }
+                    let events = events.clone();
+                    let index = index.clone();
+                    if let Ok(thread) = std::thread::Builder::new()
+                        .name("key-capture-evdev".into())
+                        .spawn(move || read_device(&path, file, &events, &index, pid))
+                    {
+                        readers.insert(identity, thread);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+    if result.is_err() {
+        return None;
     }
+    log::info!("keyboard hotplug monitor ready");
     Some(Box::new(EvdevHeld))
 }
 
@@ -204,5 +227,76 @@ impl HeldKeys for EvdevHeld {
             }
         }
         held
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn event_names_are_numeric_nodes_only() {
+        for name in ["event0", "event23"] {
+            assert!(is_event_node(Path::new(name)));
+        }
+        for name in ["event", "event-copy", "mouse0"] {
+            assert!(!is_event_node(Path::new(name)));
+        }
+    }
+    #[test]
+    fn injected_keyboard_is_excluded_from_hotplug_capture() {
+        assert!(is_own_keyboard(b"Wispr Flow Linux Helper\0padding"));
+        assert!(!is_own_keyboard(b"External keyboard\0"));
+    }
+
+    #[test]
+    #[ignore = "creates a temporary keyboard, without injecting keys; needs active-seat uinput access"]
+    fn discovers_keyboard_added_after_start_and_reconnected() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let _held = start(tx).unwrap();
+        let name = format!("Wispr hotplug test {}", std::process::id());
+        for _ in 0..2 {
+            let device = crate::backend::uinput::UInput::create_named(name.as_bytes()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            let node = loop {
+                let found = std::fs::read_dir("/sys/class/input")
+                    .unwrap()
+                    .flatten()
+                    .find_map(|e| {
+                        if !is_event_node(&e.path()) {
+                            return None;
+                        }
+                        let actual = std::fs::read_to_string(e.path().join("device/name")).ok()?;
+                        (actual.trim() == name)
+                            .then(|| PathBuf::from("/dev/input").join(e.file_name()))
+                    });
+                if let Some(node) = found {
+                    let opened = std::fs::read_dir("/proc/self/fd")
+                        .unwrap()
+                        .flatten()
+                        .any(|fd| std::fs::read_link(fd.path()).ok().as_ref() == Some(&node));
+                    if opened {
+                        break node;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "hotplug reader was not acquired"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            };
+            drop(device);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            while std::fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .flatten()
+                .any(|fd| std::fs::read_link(fd.path()).ok().as_ref() == Some(&node))
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "unplugged reader did not close"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
     }
 }

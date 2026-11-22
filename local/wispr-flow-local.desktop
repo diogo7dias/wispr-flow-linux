@@ -6,3 +6,4 @@ Icon=/home/ddm/.local/share/wispr-flow/AppDir/ai.wisprflow.WisprFlow.png
 Type=Application
 Categories=AudioVideo;Utility;
 Terminal=false
+MimeType=x-scheme-handler/wispr-flow;

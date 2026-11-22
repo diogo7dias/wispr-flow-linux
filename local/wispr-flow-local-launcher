@@ -20,6 +20,8 @@ fi
 
 setup_logging || exit 1
 setup_electron_env
+# Personal Hyprland integration; WISPR_SHORTCUT_ONLY=0 restores raw capture.
+export WISPR_SHORTCUT_ONLY="${WISPR_SHORTCUT_ONLY:-1}"
 cleanup_stale_lock
 check_display || exit 1
 detect_display_backend

@@ -35,6 +35,7 @@ zbus = "4"
 # text/html simultaneously via the focus-free ext-data-control protocol, instead
 # of shelling out to wl-copy (which can only serve one payload). Pure-Rust.
 wayland-client = "0.31"
+wayland-protocols-hyprland = { version = "1.2", features = ["client"] }
 wayland-protocols = { version = "0.32", features = ["staging", "client"] }
 
 # AT-SPI2 selection reads (backend::atspi_sel): the non-destructive path for

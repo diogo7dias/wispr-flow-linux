@@ -1,8 +1,15 @@
 # Personal installation persistence
 
+See [keyboard reliability and private diagnostics](keyboard-and-diagnostics.md)
+for hot-plug, the local shortcut-only mode, trade-offs, tests, and rollback.
+
+See [shared input permissions](input-permissions.md) for the narrower local
+device-access policy, fresh-login requirement, validation, and rollback.
+
 The fork applies and verifies the sandbox, hidden-startup, animation-cadence,
 and 70-percent status-size patches on every build. It builds `vendor/helper`
 with Cargo.lock, preserving terminal paste and safe terminal selection behavior.
+The helper also includes [clipboard preservation and focus guards](clipboard-safety.md).
 `HELPER_BIN` explicitly overrides that helper; do not set it for normal builds.
 
 The shared launcher enables sandboxing and the tested graphics/scaling flags.
@@ -13,9 +20,9 @@ Automatic compatibility with arbitrary future Flow releases is not guaranteed.
 The installed application on this machine lives at
 `~/.local/share/wispr-flow/AppDir`, independently of `build-linux/`.
 The desktop launcher and bar use `~/.local/bin/wispr-flow`.
-Builds do not automatically replace the running installation. Test a new AppDir
-before deployment, quit Flow, back up the installed AppDir, then replace it.
-Keep the previous installation for rollback. Do not let the proprietary updater
+Builds do not automatically replace the running installation. Use the
+[safe local updater](safe-updates.md) to validate, stage, test startup, and keep
+the previous installation for rollback. Do not let the proprietary updater
 replace this custom build; update the pinned version through this fork instead.
 
 `omarchy/ddm.wispr-flow/` preserves the custom bar button. Its installed copy is
@@ -29,11 +36,15 @@ floating, pinned, bottom-center, no border/blur/shadow/dimming/animation, opacit
 
 The bottom-docked Linux status window is 140 by 44 logical pixels, sized for
 normal dictation. Expanded meeting/reminder cards may need a larger surface.
-The diagnostic border is temporarily enabled in the user's Hyprland rule.
+The temporary diagnostic border is disabled in the user's Hyprland rule.
 Linux input regions use the validated renderer rectangles rather than global
 cursor polling; click-through behavior still needs user confirmation.
 
 Validation: `node --test tests/*.test.cjs`, `bats tests/*.bats`, and
 `cargo test --locked --manifest-path vendor/helper/Cargo.toml`.
+See [audio device refresh](audio-refresh.md) for microphone-event serialization,
+wake-gap refresh behavior, tests, and limitations.
+See [clean rebuild validation](rebuild-validation.md) for the tested inputs,
+results, and remaining runtime/package-format limits.
 Only clean-room source, patch tools, and tests belong in Git; no extracted
 proprietary application or account data is committed.

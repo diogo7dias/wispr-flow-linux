@@ -3,25 +3,23 @@
 //! Injection uses an in-process uinput virtual keyboard (`uinput.rs`) — real
 //! kernel input events the compositor routes to the focused surface, which is
 //! the only compositor-agnostic way to synthesize input on Wayland (XTEST does
-//! not reach native Wayland windows). Clipboard uses `wl-clipboard`
-//! (`wl-copy`/`wl-paste`).
+//! not reach native Wayland windows). Clipboard preservation and rich offers
+//! use the in-process ext-data-control client.
 //!
 //! Implemented:
-//!   * PasteText        — wl-copy the text, then uinput Ctrl+V
+//!   * PasteText        — preserve clipboard, guarded uinput paste, restore
 //!   * SimulateKeyPress — VK -> evdev (keymap.rs) -> uinput chord
-//!   * GetSelectedText  — copy-probe: save clipboard, uinput Ctrl+C, read, restore
+//!   * GetSelectedText  — non-destructive accessibility read only
 //!   * GetAccessibilityStatus — true when uinput is usable
 //!
 //! Best-effort / known gaps (Wayland exposes almost nothing here without
 //! compositor-specific D-Bus/portal calls):
 //!   * GetActiveAppInfo / GetRunningApps — no portable protocol; returns empty.
 //!     KDE could be wired via KWin D-Bus and GNOME via a shell extension later.
-//!   * Held-modifier snapshot/release (the Windows helper's GetKeyState dance)
-//!     needs reading /dev/input; not done yet (TODO).
-//!   * Simultaneous text/plain + text/html clipboard offer (wl-copy sets one
-//!     payload); we offer plain text, which is what paste targets read (TODO).
+//!   * Focus checks guard the Hyprland window identity, not individual text
+//!     fields. There is no atomic focus-check-and-inject Wayland operation.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -37,82 +35,41 @@ use crate::keymap;
 /// empty / no-op (the composing layer supplies identity from the provider).
 pub struct WaylandBackend {
     uinput: UInput,
-    has_wl_copy: bool,
-    has_wl_paste: bool,
 }
 
 impl WaylandBackend {
     pub fn connect() -> Result<WaylandBackend> {
         let uinput = UInput::create()?;
-        let has_wl_copy = which("wl-copy");
-        let has_wl_paste = which("wl-paste");
-        if !has_wl_copy || !has_wl_paste {
-            log::warn!("wl-clipboard not fully present (wl-copy={has_wl_copy}, wl-paste={has_wl_paste}) — \
-                        PasteText/selection ops need both; install `wl-clipboard`");
-        }
-        Ok(WaylandBackend {
-            uinput,
-            has_wl_copy,
-            has_wl_paste,
-        })
-    }
-
-    /// Set the clipboard, offering plain text plus (optionally) HTML. Prefers the
-    /// in-process ext-data-control owner (a single source advertising both MIME
-    /// types, like the Windows helper's dual CF_*); falls back to `wl-copy`
-    /// (plain text only) if the protocol isn't available.
-    fn clipboard_set_rich(&self, text: &str, html: Option<&str>) -> Result<()> {
-        let mut offers: Vec<super::wl_clipboard::Offer> = vec![(
-            "text/plain;charset=utf-8".to_string(),
-            text.as_bytes().to_vec(),
-        )];
-        if let Some(h) = html {
-            offers.push(("text/html".to_string(), h.as_bytes().to_vec()));
-        }
-        match super::wl_clipboard::set_clipboard(offers) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                if self.has_wl_copy {
-                    log::warn!("in-process clipboard unavailable ({e}); falling back to wl-copy (plain text only)");
-                    run_with_stdin("wl-copy", &["--type", "text/plain;charset=utf-8"], text)
-                } else {
-                    Err(format!(
-                        "clipboard set failed ({e}) and no wl-copy fallback"
-                    ))
-                }
-            }
-        }
-    }
-
-    fn clipboard_set(&self, text: &str) -> Result<()> {
-        self.clipboard_set_rich(text, None)
-    }
-
-    fn clipboard_get(&self) -> Result<String> {
-        if !self.has_wl_paste {
-            return Err("wl-paste not available".into());
-        }
-        // -n: don't append a trailing newline. Empty clipboard => exit 1; treat as "".
-        Ok(run_capture("wl-paste", &["-n"]).unwrap_or_default())
+        log::info!("wayland clipboard safety: preserve formats, guard focus, no copy probe");
+        Ok(WaylandBackend { uinput })
     }
 }
 
 impl Backend for WaylandBackend {
     fn paste_text(&mut self, text: &str, html: Option<&str>) -> Result<()> {
-        // Offer text/plain (+ text/html when supplied), like the Windows helper's
-        // dual-format clipboard, then synthesize Ctrl+V.
-        self.clipboard_set_rich(text, html)?;
-        // Let the new selection owner register before Ctrl+V reads it.
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        let ctrl = keymap::flag_to_evdev("Control").unwrap();
-        let v = keymap::vk_to_evdev(b'V' as u32).ok_or("no evdev for V")?;
-        if focused_hyprland_terminal() {
-            let shift = keymap::flag_to_evdev("Shift").unwrap();
-            log::info!("paste shortcut: Ctrl+Shift+V (terminal)");
-            self.uinput.chord(v, &[ctrl, shift])
-        } else {
-            self.uinput.chord(v, &[ctrl])
+        let target = focused_window()?;
+        let mut offers = vec![("text/plain;charset=utf-8".into(), text.as_bytes().to_vec())];
+        if let Some(html) = html {
+            offers.push(("text/html".into(), html.as_bytes().to_vec()));
         }
+        super::wl_clipboard::with_clipboard(offers, |owned| {
+            // Re-query immediately before injecting, not before slow clipboard
+            // reads. On Hyprland, unknown focus fails closed instead of guessing.
+            if target != focused_window()? {
+                return Err("focus changed; paste cancelled".into());
+            }
+            if !owned.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("clipboard changed; paste cancelled".into());
+            }
+            let ctrl = keymap::flag_to_evdev("Control").unwrap();
+            let v = keymap::vk_to_evdev(b'V' as u32).ok_or("no evdev for V")?;
+            if target.as_ref().is_some_and(|w| w.terminal) {
+                let shift = keymap::flag_to_evdev("Shift").unwrap();
+                self.uinput.chord(v, &[ctrl, shift])
+            } else {
+                self.uinput.chord(v, &[ctrl])
+            }
+        })
     }
 
     fn simulate_key_press(&mut self, keycode_vk: u32, flags: &[String]) -> Result<()> {
@@ -141,32 +98,19 @@ impl Backend for WaylandBackend {
     fn get_selected_text(&mut self) -> Result<Selection> {
         // A copy probe sends SIGINT in terminals and may return stale clipboard
         // content. Do not synthesize Ctrl+C in a terminal.
-        if focused_hyprland_terminal() {
+        let target = match focused_window() {
+            Ok(target) => target,
+            Err(_) => return Ok(Selection::default()),
+        };
+        if target.as_ref().is_some_and(|w| w.terminal) {
             return Ok(Selection::default());
         }
-        // Prefer the non-destructive AT-SPI2 Text-interface read (no keystroke,
-        // no clipboard churn). Fall back to the copy-probe below when the a11y
-        // bus is unreachable or the focused object exposes no selection.
+        // Never fall back to Ctrl+C: it can interrupt an app and return stale
+        // clipboard contents when there is no selected text.
         match super::atspi_sel::get_selection() {
-            Ok(Some(sel)) => return Ok(sel),
-            Ok(None) => log::debug!("AT-SPI: no selection, falling back to copy-probe"),
-            Err(e) => log::debug!("AT-SPI unavailable ({e}); falling back to copy-probe"),
+            Ok(Some(sel)) if focused_window().is_ok_and(|now| now == target) => Ok(sel),
+            _ => Ok(Selection::default()),
         }
-        // Copy-probe fallback: save clipboard, synth Ctrl+C, read, restore.
-        // Approximate and destructive-then-restored.
-        let saved = self.clipboard_get().unwrap_or_default();
-        let ctrl = keymap::flag_to_evdev("Control").unwrap();
-        let c = keymap::vk_to_evdev(b'C' as u32).ok_or("no evdev for C")?;
-        self.uinput.chord(c, &[ctrl])?;
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        let selected = self.clipboard_get().unwrap_or_default();
-        let _ = self.clipboard_set(&saved);
-        Ok(Selection {
-            selected_text: selected.clone(),
-            contents: selected,
-            before_text: String::new(),
-            after_text: String::new(),
-        })
     }
 
     fn accessibility_status(&mut self) -> bool {
@@ -198,63 +142,67 @@ fn terminal_window(json: &str) -> bool {
     let Ok(window) = serde_json::from_str::<serde_json::Value>(json) else {
         return false;
     };
-    let class = window["class"].as_str().unwrap_or_default().to_ascii_lowercase();
-    matches!(class.as_str(), "foot" | "footclient" | "alacritty" | "kitty"
-        | "com.mitchellh.ghostty" | "ghostty" | "org.wezfurlong.wezterm"
-        | "wezterm" | "org.gnome.terminal" | "gnome-terminal-server"
-        | "konsole" | "org.kde.konsole" | "tilix" | "terminator")
+    let class = window["class"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        class.as_str(),
+        "foot"
+            | "footclient"
+            | "alacritty"
+            | "kitty"
+            | "com.mitchellh.ghostty"
+            | "ghostty"
+            | "org.wezfurlong.wezterm"
+            | "wezterm"
+            | "org.gnome.terminal"
+            | "gnome-terminal-server"
+            | "konsole"
+            | "org.kde.konsole"
+            | "tilix"
+            | "terminator"
+    )
 }
 
-fn focused_hyprland_terminal() -> bool {
+#[derive(Debug, PartialEq, Eq)]
+struct FocusedWindow {
+    address: String,
+    pid: u64,
+    class: String,
+    terminal: bool,
+}
+
+fn parse_focus(json: &str) -> Result<FocusedWindow> {
+    let window: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| "invalid focus response")?;
+    let address = window["address"]
+        .as_str()
+        .filter(|s| s.starts_with("0x") && s.len() > 2 && *s != "0x0")
+        .ok_or("no focused window")?
+        .to_owned();
+    let pid = window["pid"]
+        .as_u64()
+        .filter(|p| *p > 0)
+        .ok_or("invalid focused PID")?;
+    let class = window["class"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("unknown focused app")?
+        .to_owned();
+    Ok(FocusedWindow {
+        address,
+        pid,
+        class,
+        terminal: terminal_window(json),
+    })
+}
+
+fn focused_window() -> Result<Option<FocusedWindow>> {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        return false;
+        return Ok(None);
     }
-    run_capture("hyprctl", &["activewindow", "-j"])
-        .map(|json| terminal_window(&json))
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod terminal_tests {
-    use super::terminal_window;
-
-    #[test]
-    fn detects_terminals_by_class_not_title() {
-        assert!(terminal_window(r#"{"class":"foot"}"#));
-        assert!(terminal_window(r#"{"class":"Alacritty"}"#));
-        assert!(terminal_window(r#"{"class":"com.mitchellh.ghostty"}"#));
-        assert!(!terminal_window(r#"{"class":"chromium","title":"foot"}"#));
-        assert!(!terminal_window("{}"));
-        assert!(!terminal_window("invalid"));
-    }
-}
-
-fn which(prog: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file()))
-        .unwrap_or(false)
-}
-
-fn run_with_stdin(prog: &str, args: &[&str], input: &str) -> Result<()> {
-    let mut child = Command::new(prog)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("spawn {prog}: {e}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or("no stdin")?
-        .write_all(input.as_bytes())
-        .map_err(|e| format!("write {prog} stdin: {e}"))?;
-    let status = child.wait().map_err(|e| format!("wait {prog}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{prog} exited with {status}"))
-    }
+    parse_focus(&run_capture("hyprctl", &["activewindow", "-j"])?).map(Some)
 }
 
 /// Run `prog args`, capturing stdout, but never block the (single-threaded)
@@ -304,5 +252,35 @@ fn run_capture(prog: &str, args: &[&str]) -> Result<String> {
             }
             Err(e) => return Err(format!("wait {prog}: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::{parse_focus, terminal_window};
+
+    #[test]
+    fn focus_identity_rejects_unknown_and_distinguishes_same_app_windows() {
+        for json in [
+            "{}",
+            "invalid",
+            r#"{"address":"0x0","pid":123,"class":"foot"}"#,
+        ] {
+            assert!(parse_focus(json).is_err());
+        }
+        let a = parse_focus(r#"{"address":"0x123","pid":123,"class":"foot"}"#).unwrap();
+        let b = parse_focus(r#"{"address":"0x456","pid":123,"class":"foot"}"#).unwrap();
+        assert_ne!(a, b);
+        assert!(a.terminal);
+    }
+
+    #[test]
+    fn detects_terminals_by_class_not_title() {
+        assert!(terminal_window(r#"{"class":"foot"}"#));
+        assert!(terminal_window(r#"{"class":"Alacritty"}"#));
+        assert!(terminal_window(r#"{"class":"com.mitchellh.ghostty"}"#));
+        assert!(!terminal_window(r#"{"class":"chromium","title":"foot"}"#));
+        assert!(!terminal_window("{}"));
+        assert!(!terminal_window("invalid"));
     }
 }

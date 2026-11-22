@@ -59,6 +59,13 @@ impl UInput {
     /// Create the virtual keyboard. Must be kept alive for the process lifetime;
     /// dropping it destroys the device.
     pub fn create() -> Result<UInput> {
+        Self::create_named(b"Wispr Flow Linux Helper")
+    }
+
+    pub(crate) fn create_named(name: &[u8]) -> Result<UInput> {
+        if name.len() >= 80 {
+            return Err("virtual keyboard name too long".into());
+        }
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK)
@@ -77,7 +84,6 @@ impl UInput {
         // Legacy device-setup path (write a uinput_user_dev, then UI_DEV_CREATE):
         // widely supported and avoids the newer UI_DEV_SETUP/abs_setup structs.
         let mut dev: libc::uinput_user_dev = unsafe { std::mem::zeroed() };
-        let name = b"Wispr Flow Linux Helper";
         for (i, &b) in name.iter().enumerate() {
             dev.name[i] = b as libc::c_char;
         }
@@ -189,6 +195,10 @@ impl UInput {
 /// or the logind `uaccess` ACL; on sessions without it, the snapshot is simply
 /// skipped (the common case at paste time has no modifier held anyway).
 pub fn held_modifiers() -> Vec<u16> {
+    // Shortcut-only mode must not reopen raw devices even during paste.
+    if crate::capture::shortcuts::enabled() {
+        return Vec::new();
+    }
     use std::collections::BTreeSet;
     // EVIOCGKEY(len) = _IOC(_IOC_READ=2, 'E'=0x45, 0x18, len). KEY_MAX=0x2ff ->
     // a 96-byte bitmap covers every keycode we care about.
