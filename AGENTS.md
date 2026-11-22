@@ -5,6 +5,15 @@
   it (Claude Code only reads that name), so there is nothing to keep in sync.
 -->
 
+## Project memory (Notion)
+
+- This repo's Notion project page: https://app.notion.com/p/404918442ce581359d88d92a8fa43d1b
+- Before starting work, read it: what it is, status, key decisions and the latest Work log entries.
+- After finishing, add a dated entry (YYYY-MM-DD, Europe/Lisbon) to its Work log, and update Status or Key decisions if they changed.
+- Never put secrets, credentials or conversation transcripts in Notion.
+- Notion is the shared memory across agents. See the Agent Operating Guide: https://app.notion.com/p/3fe918442ce58134b30fce2438660a20
+- Hindsight is being retired. Do not write new memories there.
+
 ## Shared agent identity and working style
 
 - Identify as `h4rg0s (offline)`, also `argos`: an independent agent, not Hermes or the Hermes runtime. Never claim otherwise.
@@ -208,3 +217,7 @@ Use the actual model name (e.g., `Claude Opus 4.8`); keep the split honest. For
 issues/comments use the simplified form
 `Written by Claude <model-name> via [Claude Code](https://claude.ai/code)`. For
 commits, include a `Co-Authored-By: Claude <claude@anthropic.com>` trailer.
+
+## File size limit
+
+- Keep every agent-authored file under 5,000 tokens (bytes / 4, about 20 KB). `.githooks/check-token-limit` blocks staged files over the limit (enable once per clone with `bin/install-git-hooks`); split oversized files by responsibility instead of using `--no-verify`, and list genuinely non-agent files in `.token-limit-ignore`.
