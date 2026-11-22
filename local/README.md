@@ -6,8 +6,12 @@ for hot-plug, the local shortcut-only mode, trade-offs, tests, and rollback.
 See [shared input permissions](input-permissions.md) for the narrower local
 device-access policy, fresh-login requirement, validation, and rollback.
 
-The fork applies and verifies the sandbox, hidden-startup, animation-cadence,
-and 70-percent status-size patches on every build. It builds `vendor/helper`
+The fork applies and verifies the sandbox, audio-refresh, status-broadcast and
+70-percent status-size patches on every build. Since the 1.6.1337 sync, hidden
+startup (`--hidden`) and the compact status window come from upstream's
+`linux-autostart` and `linux-status-compact`; the local start-hidden,
+status-window-size, status-input-region and status-animation patches no longer
+anchor and are not applied. It builds `vendor/helper`
 with Cargo.lock, preserving terminal paste and safe terminal selection behavior.
 The helper also includes [clipboard preservation and focus guards](clipboard-safety.md).
 `HELPER_BIN` explicitly overrides that helper; do not set it for normal builds.
@@ -34,11 +38,9 @@ The existing user Hyprland rule targets initial title `Flow Status Indicator`:
 floating, pinned, bottom-center, no border/blur/shadow/dimming/animation, opacity
 1. It remains in `~/.config/hypr/hyprland.lua` independently of application builds.
 
-The bottom-docked Linux status window is 140 by 44 logical pixels, sized for
-normal dictation. Expanded meeting/reminder cards may need a larger surface.
-The temporary diagnostic border is disabled in the user's Hyprland rule.
-Linux input regions use the validated renderer rectangles rather than global
-cursor polling; click-through behavior still needs user confirmation.
+The bottom-docked Linux status window is 200 by 110 logical pixels on Flow
+1.6.1337 (upstream's compact size). Click-through around the pill on Hyprland
+is not verified for this size.
 
 Validation: `node --test tests/*.test.cjs`, `bats tests/*.bats`, and
 `cargo test --locked --manifest-path vendor/helper/Cargo.toml`.
