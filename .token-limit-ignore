@@ -1,2 +1,13 @@
 # Playwright MCP snapshot output
 /.playwright-mcp/
+
+# Upstream port files (wispr-flow-linux/wispr-flow-linux), kept as upstream
+# ships them so future merges stay clean.
+/tests/linux-patches.bats
+/tests/installer-pin.bats
+/scripts/build-linux.sh
+/scripts/doctor.sh
+/docs/learnings/patching-minified-js.md
+/docs/decisions.md
+/.github/workflows/ci.yml
+/CHANGELOG.md

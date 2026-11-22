@@ -80,6 +80,13 @@ rm -f "$APP_LIBDIR/resources/Release/Wispr Flow Helper.exe" 2>/dev/null || true
 # directories are forced world-traversable.
 find "$APP_LIBDIR" -type d -exec chmod 0755 {} +
 chmod 0755 "$APP_LIBDIR/$NAME" "$APP_LIBDIR/resources/Release/wispr-flow-linux-helper"
+# Fail here, not after packing, if staging left resources/ closed: the
+# artifact test checks the same dirs after --appimage-extract, so a pass
+# here and a fail there points at appimagetool or the runtime instead.
+for d in "$APP_LIBDIR/resources" "$APP_LIBDIR/resources/Release"; do
+  mode="$(stat -c '%a' "$d")"
+  [[ $mode == 755 ]] || die "staged $d is $mode, expected 755"
+done
 
 say "Shared launcher library + doctor"
 cp "$SCRIPTS_DIR/launcher-common.sh" "$APP_LIBDIR/launcher-common.sh"
@@ -126,6 +133,7 @@ fi
 setup_logging || exit 1
 setup_electron_env
 cleanup_stale_lock
+migrate_legacy_data_dir
 
 log_message '--- Wispr Flow Launcher Start (appimage) ---'
 log_message "Timestamp: \$(date)"
@@ -185,6 +193,13 @@ if [[ -f "$ICON_SVG" ]]; then
 fi
 
 say "AppStream metadata"
+# NOTE: deliberately NO <icon> element. For a desktop-application component the
+# icon is resolved from the <launchable> .desktop file's Icon= key, so an
+# <icon type="stock"> here is redundant -- and appstream-glib's appstream-util
+# rejects it outright ("<icon> not allowed in desktop appdata"). appimagetool
+# runs whichever validators are installed, so declaring it broke the AppImage
+# build on hosts that have appstream-glib (e.g. Arch) while passing where only
+# the newer appstreamcli is present (e.g. the Ubuntu CI runners).
 cat > "$APPDIR/usr/share/metainfo/${COMPONENT_ID}.appdata.xml" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
@@ -201,7 +216,6 @@ cat > "$APPDIR/usr/share/metainfo/${COMPONENT_ID}.appdata.xml" <<EOF
     </p>
   </description>
   <launchable type="desktop-id">${COMPONENT_ID}.desktop</launchable>
-  <icon type="stock">${COMPONENT_ID}</icon>
   <url type="homepage">https://wisprflow.ai</url>
   <provides>
     <binary>AppRun</binary>

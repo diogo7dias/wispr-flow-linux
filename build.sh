@@ -11,7 +11,7 @@
 #   parse_arguments
 #     --test-flags? -> print resolved flags + exit 0 (NO build)
 #   check_dependencies
-#   download_installer  (--exe, else fetch latest) -> staged installer
+#   download_installer  (--exe, else fetch the pinned installer) -> staged .exe
 #   scripts/build-linux.sh           -> patch + native + stage (ARCH/version via env)
 #   fetch_electron (if not staged)   -> Linux Electron, launcher renamed wispr-flow
 #   run_packaging                    -> scripts/packaging/<fmt>.sh
@@ -35,14 +35,18 @@ original_home=''
 project_root=''
 work_dir=''
 installer_exe_path=''
-installer_sha256=''
 final_output_path=''
 
 #--- package metadata (constants) ----------------------------------------------
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PACKAGE_NAME='wispr-flow'
 readonly WM_CLASS='Wispr Flow'
 export WM_CLASS
-readonly APP_VERSION='1.6.827'
+# The upstream app version comes from the installer pin, the single place the
+# bump workflow rewrites (version, download URL and sha256 move together).
+# shellcheck source=scripts/setup/installer-pin.sh
+source "$script_dir/scripts/setup/installer-pin.sh"
+readonly APP_VERSION="$WISPR_VERSION"
 readonly ELECTRON_VERSION='42.3.0'
 readonly ELECTRON_MAJOR='42'
 # Exported so scripts/build-linux.sh stages the versions the orchestrator
@@ -61,7 +65,6 @@ export MAINTAINER DESCRIPTION
 electron_version="$ELECTRON_VERSION"
 
 #--- source helpers ------------------------------------------------------------
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/_common.sh
 source "$script_dir/scripts/_common.sh"
 # shellcheck source=scripts/setup/detect-host.sh
@@ -81,6 +84,11 @@ source "$script_dir/scripts/setup/download.sh"
 # no-tag builds the package version stays just <wisprVer> (the APP_VERSION
 # constant), and APP_VERSION itself is NEVER altered -- staging always sees the
 # bare upstream version.
+#
+# A pre-release tag (v1.0.4-rc.1+wispr1.6.897) drops its -suffix here, so an
+# rc builds the exact assets the final tag would. Those assets only ever
+# reach a GitHub pre-release, never a package repo (ci.yml skips the repo
+# jobs on -rc tags), so the filename never has to round-trip to the rc tag.
 #===============================================================================
 derive_pkg_version() {
 	pkg_version="$APP_VERSION"
@@ -88,7 +96,7 @@ derive_pkg_version() {
 
 	local repo_ver
 	repo_ver="$(printf '%s' "$release_tag" \
-		| sed -nE 's/^v([0-9]+(\.[0-9]+)*)\+wispr.*/\1/p')"
+		| sed -nE 's/^v([0-9]+(\.[0-9]+)*)(-[0-9A-Za-z.]+)?\+wispr.*/\1/p')"
 
 	if [[ -n $repo_ver ]]; then
 		pkg_version="${APP_VERSION}-${repo_ver}"
@@ -132,11 +140,19 @@ sync_stage_to_dist() {
 	[[ -f "$stage_dir/app.asar" ]] \
 		|| die "staged app.asar missing at $stage_dir -- staging incomplete"
 
+	# An exact mirror: electron-dist survives between builds (step 2 of
+	# build-linux.sh keeps downloads/), so a file the previous stage had and
+	# this one does not must go. Electron's own default_app.asar is the one
+	# file the dist put there itself; it stays.
 	mkdir -p "$res_dir"
 	if command -v rsync >/dev/null 2>&1; then
-		rsync -a "$stage_dir/" "$res_dir/" \
+		rsync -a --delete --exclude 'default_app.asar' \
+			"$stage_dir/" "$res_dir/" \
 			|| die 'rsync of staged tree into resources failed'
 	else
+		find "$res_dir" -mindepth 1 -maxdepth 1 ! -name 'default_app.asar' \
+			-exec rm -rf {} + \
+			|| die 'clearing electron-dist/resources failed'
 		cp -a "$stage_dir/." "$res_dir/" \
 			|| die 'copy of staged tree into resources failed'
 	fi
@@ -260,7 +276,7 @@ print_resolved_flags() {
 	echo "Arch (electron):$electron_arch"
 	echo "Distro family:  $distro_family"
 	echo "Clean:          $clean_action"
-	echo "Exe:            ${local_exe_path:-<none: fetch latest upstream>}"
+	echo "Exe:            ${local_exe_path:-<none: fetch pinned installer>}"
 	echo "Release tag:    ${release_tag:-<none>}"
 	echo "App version:    $APP_VERSION"
 	echo "Package version:$pkg_version"
@@ -290,9 +306,9 @@ main() {
 
 	check_dependencies
 
-	# Phase 2: resolve the installer (--exe, else fetch the latest upstream),
-	# then 7z-extract it into the extract/ tree that staging consumes
-	# (idempotent -- reuses a hand-prepared tree).
+	# Phase 2: obtain the installer (--exe, else download the pinned one and
+	# verify its digest), then 7z-extract it into the extract/ tree that
+	# staging consumes (idempotent -- reuses a same-version tree).
 	download_installer
 	extract_installer
 
@@ -323,5 +339,9 @@ main() {
 	[[ -n $final_output_path ]] && echo "Output: $final_output_path"
 }
 
-main "$@"
-exit 0
+# Run only when executed. Sourced (tests/build-workdir.bats), the file
+# defines its functions and globals and returns.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	main "$@"
+	exit 0
+fi

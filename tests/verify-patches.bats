@@ -29,12 +29,8 @@ teardown() {
 # Keyed by a short name so the negative tests can omit one at a time.
 declare -gA MARKER_SAMPLES=(
 	[audiorefresh]='/*WISPR_LINUX_AUDIO_REFRESH_V1*/'
-	[compact]='/*WISPR_LINUX_COMPACT_STATUS_WINDOW*/'
-	[inputregion]='/*WISPR_LINUX_STATUS_INPUT_REGION*/'
 	[sandbox]='/*WISPR_LINUX_SANDBOX_PRELOAD_V1*/'
-	[hidden]='/*WISPR_LINUX_START_HIDDEN*/'
 	[broadcast]='/*WISPR_LINUX_STATUS_BROADCAST*/'
-	[cadence]='/*WISPR_LINUX_STATUS_DISPLAY_CADENCE*/'
 	[scale]='/*WISPR_LINUX_STATUS_SIZE_70*/'
 	[branch]='if (process.env.WISPR_LINUX_HELPER_BRANCH) { return "linux"; }'
 	[logline]='console.log("Running packaged Linux Helper service", { serviceScriptPath: p });'
@@ -43,8 +39,16 @@ declare -gA MARKER_SAMPLES=(
 	[helperenv]='stdio:["pipe","pipe","pipe","pipe"],env:{/*WISPR_LINUX_HELPER_ENV*/...process.env,sentryDSN:x}'
 	[chrome]='e.classList.add(/*WISPR_LINUX_WIN32_CHROME*/"linux"===w.electron.platform.os?"win32":w.electron.platform.os);'
 	[windowframe]='"win32"===process.platform||"linux"===process.platform/*WISPR_LINUX_FRAMELESS*/&&Object.assign(t,{titleBarStyle:"hidden"});'
+	[hubfocusable]='webPreferences:{preload:p("../renderer","hub","preload.js"),devTools:d},focusable:/*WISPR_LINUX_HUB_FOCUSABLE*/"linux"===process.platform};'
 	[treataswindows]='const x=((y?.platform?.isWindows??!1)||"linux"===y?.platform?.os)/*WISPR_LINUX_RENDERER_ISWIN*/;'
 	[deeplink]='if(f.H8||"linux"===process.platform){/*WISPR_LINUX_DEEPLINK*/const e=process.argv.find(x=>x.startsWith("wispr-flow:"));}'
+	[earlysingleton]='/*WISPR_LINUX_EARLY_SINGLETON_V1*/try{var __wisprApp=require("electron").app;if(__wisprApp&&!__wisprApp.requestSingleInstanceLock()){__wisprApp.quit(),process.exit(0)}}catch(__wisprErr){}'
+	[pilldrag]='re=e=>{e=(/*WISPR_LINUX_DISABLE_PILL_DRAG*/"linux"===process.platform)?!1:e}'
+	[shortcutdefaults]='(r.H8||"linux"===process.platform)/*WISPR_LINUX_MAIN_SHORTCUT_DEFAULTS*/?pe:ce'
+	[autostart]='/*WISPR_LINUX_AUTOSTART*/;(function(){if(process.platform!=="linux")return;})();'
+	[xdgdatadir]='f=u?o().join(process.env.APPDATA||"","Wispr Flow"):("linux"===process.platform/*WISPR_LINUX_XDG_DATA_DIR*/?o().join(process.env.XDG_CONFIG_HOME||o().join(i().homedir(),".config"),"Wispr Flow"):o().join(i().homedir(),"Library","Application Support","Wispr Flow"))'
+	[statuscompact]='return(/*WISPR_LINUX_STATUS_COMPACT*/"linux"===process.platform)?{x:0}:{x:1}'
+	[pickeranchor]='(0,g.Bn)(A.RA.contextMenuWindow,d.qM.ShowAutoPolishPicker,/*WISPR_LINUX_PICKER_ANCHOR*/((p,b)=>b&&p?{...p}:p)(e,b))'
 )
 
 # Write a fixture app.asar-like file containing every marker, except the one
@@ -146,6 +150,14 @@ write_fixture() {
 	[[ "$output" == *'MISSING'* ]]
 }
 
+@test "verify: exits 1 when the hub-focusable marker is missing" {
+	local fixture
+	fixture="$(write_fixture hubfocusable)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 1 ]]
+	[[ "$output" == *'MISSING'* ]]
+}
+
 @test "verify: exits 1 when the treat-as-windows marker is missing" {
 	local fixture
 	fixture="$(write_fixture treataswindows)"
@@ -157,6 +169,46 @@ write_fixture() {
 @test "verify: exits 1 when the deeplink marker is missing" {
 	local fixture
 	fixture="$(write_fixture deeplink)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 1 ]]
+	[[ "$output" == *'MISSING'* ]]
+}
+
+@test "verify: exits 1 when the early-singleton marker is missing" {
+	local fixture
+	fixture="$(write_fixture earlysingleton)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 1 ]]
+	[[ "$output" == *'MISSING'* ]]
+}
+
+@test "verify: exits 1 when the pilldrag marker is missing" {
+	local fixture
+	fixture="$(write_fixture pilldrag)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 1 ]]
+	[[ "$output" == *'MISSING'* ]]
+}
+
+@test "verify: exits 1 when the shortcut-defaults marker is missing" {
+	local fixture
+	fixture="$(write_fixture shortcutdefaults)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 1 ]]
+	[[ "$output" == *'MISSING'* ]]
+}
+
+@test "verify: exits 1 when the statuscompact marker is missing" {
+	local fixture
+	fixture="$(write_fixture statuscompact)"
+	run "$VERIFY_SH" "$fixture"
+	[[ "$status" -eq 1 ]]
+	[[ "$output" == *'MISSING'* ]]
+}
+
+@test "verify: exits 1 when the picker-anchor marker is missing" {
+	local fixture
+	fixture="$(write_fixture pickeranchor)"
 	run "$VERIFY_SH" "$fixture"
 	[[ "$status" -eq 1 ]]
 	[[ "$output" == *'MISSING'* ]]

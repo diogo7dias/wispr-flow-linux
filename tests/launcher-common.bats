@@ -37,6 +37,7 @@ setup() {
 	unset DISPLAY
 	unset WAYLAND_DISPLAY
 	unset WISPR_USE_WAYLAND
+	unset WISPR_USE_X11
 	unset WISPR_DISABLE_GPU
 	unset XDG_CURRENT_DESKTOP
 	unset XDG_SESSION_TYPE
@@ -131,6 +132,7 @@ teardown() {
 	DISPLAY=':0'
 	XDG_CURRENT_DESKTOP='KDE'
 	WISPR_USE_WAYLAND='1'
+	WISPR_USE_X11='1'
 	WISPR_DISABLE_GPU='1'
 	log_session_env
 
@@ -142,8 +144,9 @@ teardown() {
 	[[ "${lines[3]}" == '  DISPLAY=:0' ]]
 	[[ "${lines[4]}" == '  XDG_CURRENT_DESKTOP=KDE' ]]
 	[[ "${lines[5]}" == '  WISPR_USE_WAYLAND=1' ]]
-	[[ "${lines[6]}" == '  WISPR_DISABLE_GPU=1' ]]
-	[[ "${lines[7]}" == '}' ]]
+	[[ "${lines[6]}" == '  WISPR_USE_X11=1' ]]
+	[[ "${lines[7]}" == '  WISPR_DISABLE_GPU=1' ]]
+	[[ "${lines[8]}" == '}' ]]
 }
 
 @test "log_session_env: unset values render as 'KEY=' (no value)" {
@@ -158,7 +161,8 @@ teardown() {
 	[[ "${lines[3]}" == '  DISPLAY=' ]]
 	[[ "${lines[4]}" == '  XDG_CURRENT_DESKTOP=' ]]
 	[[ "${lines[5]}" == '  WISPR_USE_WAYLAND=' ]]
-	[[ "${lines[6]}" == '  WISPR_DISABLE_GPU=' ]]
+	[[ "${lines[6]}" == '  WISPR_USE_X11=' ]]
+	[[ "${lines[7]}" == '  WISPR_DISABLE_GPU=' ]]
 }
 
 # =============================================================================
@@ -318,6 +322,62 @@ teardown() {
 	! has_electron_arg '--ozone-platform=wayland'
 }
 
+@test "build_electron_args: WISPR_USE_X11=1 pins Ozone X11 on a Wayland session" {
+	is_wayland=true
+	WISPR_USE_X11=1
+	setup_logging
+	build_electron_args deb
+	has_electron_arg '--ozone-platform=x11'
+	run has_electron_arg '--ozone-platform=wayland'
+	[[ $status -ne 0 ]]
+	run has_electron_arg '--enable-wayland-ime'
+	[[ $status -ne 0 ]]
+	grep -qF 'WISPR_USE_X11=1 - XWayland (Ozone X11) backend' "$log_file"
+}
+
+@test "build_electron_args: WISPR_USE_X11=1 does not export GDK_BACKEND" {
+	# The X11 branch must not leak a toolkit backend into the app's
+	# children (xdg-open, the browser it launches); see the comment there.
+	is_wayland=true
+	WISPR_USE_X11=1
+	setup_logging
+	build_electron_args deb
+	[[ -z ${GDK_BACKEND:-} ]]
+}
+
+@test "build_electron_args: WISPR_USE_X11 wins over WISPR_USE_WAYLAND when both set" {
+	is_wayland=true
+	WISPR_USE_WAYLAND=1
+	WISPR_USE_X11=1
+	setup_logging
+	build_electron_args deb
+	has_electron_arg '--ozone-platform=x11'
+	run has_electron_arg '--ozone-platform=wayland'
+	[[ $status -ne 0 ]]
+	[[ -z ${GDK_BACKEND:-} ]]
+	grep -qF 'both set - X11 wins' "$log_file"
+}
+
+@test "build_electron_args: WISPR_USE_X11 ignored on X11 (is_wayland=false)" {
+	# Already X11: Ozone's default is right, and the flag stays out of argv.
+	is_wayland=false
+	WISPR_USE_X11=1
+	setup_logging
+	build_electron_args deb
+	run has_electron_arg '--ozone-platform=x11'
+	[[ $status -ne 0 ]]
+}
+
+@test "build_electron_args: WISPR_USE_X11 must be exactly '1'" {
+	# Near miss: a truthy-looking value is not the opt-in.
+	is_wayland=true
+	WISPR_USE_X11=true
+	setup_logging
+	build_electron_args deb
+	run has_electron_arg '--ozone-platform=x11'
+	[[ $status -ne 0 ]]
+}
+
 # =============================================================================
 # setup_electron_env
 # =============================================================================
@@ -379,4 +439,137 @@ teardown() {
 	run cleanup_stale_lock
 	[[ $status -eq 0 ]]
 	[[ -f "$config_dir/SingletonLock" ]]
+}
+
+# =============================================================================
+# migrate_legacy_data_dir
+# =============================================================================
+
+# A legacy data dir shaped like a real pre-#100 profile: the database with
+# its WAL pair, the backups/ and meetings/ trees, and a dotfile.
+_seed_legacy() {
+	local legacy
+	legacy="$(wispr_legacy_data_dir)"
+	mkdir -p "$legacy/backups" "$legacy/meetings/m1"
+	printf 'db' > "$legacy/flow.sqlite"
+	printf 'wal' > "$legacy/flow.sqlite-wal"
+	printf 'shm' > "$legacy/flow.sqlite-shm"
+	printf 'b' > "$legacy/backups/flow-2026-09-01.sqlite"
+	printf 'm' > "$legacy/meetings/m1/audio.wav"
+	printf 'h' > "$legacy/.hidden"
+}
+
+@test "wispr_legacy_data_dir: the macOS path under HOME" {
+	[[ $(wispr_legacy_data_dir) == "$HOME/Library/Application Support/Wispr Flow" ]]
+}
+
+@test "migrate_legacy_data_dir: no legacy dir - no-op, creates nothing" {
+	setup_logging
+	run migrate_legacy_data_dir
+	[[ $status -eq 0 ]]
+	[[ ! -e "$(wispr_config_dir)" ]]
+	[[ ! -e "$HOME/Library" ]]
+}
+
+@test "migrate_legacy_data_dir: moves every entry and removes the empty legacy tree" {
+	local target
+	target="$(wispr_config_dir)"
+	_seed_legacy
+	setup_logging
+	migrate_legacy_data_dir
+	[[ $(< "$target/flow.sqlite") == 'db' ]]
+	[[ $(< "$target/flow.sqlite-wal") == 'wal' ]]
+	[[ $(< "$target/flow.sqlite-shm") == 'shm' ]]
+	[[ $(< "$target/backups/flow-2026-09-01.sqlite") == 'b' ]]
+	[[ $(< "$target/meetings/m1/audio.wav") == 'm' ]]
+	[[ $(< "$target/.hidden") == 'h' ]]
+	[[ ! -e "$HOME/Library" ]]
+	grep -qF "Moved 6 entries from $HOME/Library/Application Support/Wispr Flow" \
+		"$log_file"
+}
+
+@test "migrate_legacy_data_dir: merges into an existing config dir" {
+	# Electron creates ~/.config/Wispr Flow on first launch, so the target
+	# normally exists with Chromium state in it already.
+	local target
+	target="$(wispr_config_dir)"
+	mkdir -p "$target/Local Storage"
+	printf '{}' > "$target/config.json"
+	_seed_legacy
+	setup_logging
+	migrate_legacy_data_dir
+	[[ -f "$target/flow.sqlite" ]]
+	[[ $(< "$target/config.json") == '{}' ]]
+	[[ -d "$target/Local Storage" ]]
+	[[ ! -e "$HOME/Library" ]]
+}
+
+@test "migrate_legacy_data_dir: keeps a ~/Library that holds anything else" {
+	mkdir -p "$HOME/Library/Application Support/OtherApp" "$HOME/Library/Fonts"
+	_seed_legacy
+	setup_logging
+	migrate_legacy_data_dir
+	[[ -f "$(wispr_config_dir)/flow.sqlite" ]]
+	[[ ! -e "$(wispr_legacy_data_dir)" ]]
+	[[ -d "$HOME/Library/Application Support/OtherApp" ]]
+	[[ -d "$HOME/Library/Fonts" ]]
+}
+
+@test "migrate_legacy_data_dir: any name clash moves nothing" {
+	# A database already in the XDG dir must never be overwritten, and the
+	# WAL pair must never be split from its database.
+	local target legacy
+	target="$(wispr_config_dir)"
+	legacy="$(wispr_legacy_data_dir)"
+	mkdir -p "$target"
+	printf 'new' > "$target/flow.sqlite-wal"
+	_seed_legacy
+	setup_logging
+	migrate_legacy_data_dir
+	[[ ! -e "$target/flow.sqlite" ]]
+	[[ $(< "$target/flow.sqlite-wal") == 'new' ]]
+	[[ $(< "$legacy/flow.sqlite") == 'db' ]]
+	[[ $(< "$legacy/flow.sqlite-wal") == 'wal' ]]
+	[[ -d "$legacy/backups" ]]
+	grep -qF "Legacy data dir not moved: $target/flow.sqlite-wal exists" \
+		"$log_file"
+}
+
+@test "migrate_legacy_data_dir: a held SingletonLock moves nothing" {
+	# An older build still running from the legacy path during an upgrade.
+	local target legacy
+	target="$(wispr_config_dir)"
+	legacy="$(wispr_legacy_data_dir)"
+	mkdir -p "$target"
+	ln -s "myhost-$$" "$target/SingletonLock"
+	_seed_legacy
+	setup_logging
+	migrate_legacy_data_dir
+	[[ ! -e "$target/flow.sqlite" ]]
+	[[ -f "$legacy/flow.sqlite" ]]
+	grep -qF 'Legacy data dir not moved: an instance holds' "$log_file"
+}
+
+@test "migrate_legacy_data_dir: a stale lock cleared first does not block it" {
+	# The launchers run cleanup_stale_lock first; a dead owner's lock is gone
+	# by the time the migration looks.
+	local target
+	target="$(wispr_config_dir)"
+	mkdir -p "$target"
+	ln -s "myhost-99999999" "$target/SingletonLock"
+	_seed_legacy
+	setup_logging
+	cleanup_stale_lock
+	migrate_legacy_data_dir
+	[[ -f "$target/flow.sqlite" ]]
+}
+
+@test "migrate_legacy_data_dir: every launcher runs it after cleanup_stale_lock" {
+	local f
+	for f in scripts/packaging/deb.sh scripts/packaging/rpm.sh \
+		scripts/packaging/appimage.sh nix/wispr-flow.nix; do
+		run grep -A1 -x 'cleanup_stale_lock' "$SCRIPT_DIR/../$f"
+		[[ $status -eq 0 ]]
+		[[ ${lines[1]} == 'migrate_legacy_data_dir' ]]
+	done
 }

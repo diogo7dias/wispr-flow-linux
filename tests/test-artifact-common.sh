@@ -101,6 +101,30 @@ assert_command_succeeds() {
 	fi
 }
 
+# Assert the packed asar lists no patch backup (*.orig) entry. Every patch
+# keeps a <bundle>.orig beside the file it rewrites and build-linux.sh
+# step 7 drops them before repack; before it did, nine of them (102 MB on
+# 1.6.897) shipped in every package. Only the header is read: an asar
+# starts with a 16-byte pickle prefix whose last uint32 (offset 12,
+# little-endian) is the JSON header length, so every entry name sits in
+# the first 16+len bytes and a matching string in a bundle body cannot be
+# mistaken for an entry. A PASS is only printed once that length parsed.
+assert_asar_no_patch_backups() {
+	local asar="$1" len names
+	len=$(LC_ALL=C od -An -j12 -N4 -tu4 "$asar" 2>/dev/null | tr -d ' ')
+	if [[ ! $len =~ ^[0-9]+$ ]] || (( len == 0 )); then
+		fail "Cannot read the asar header length: $asar"
+		return
+	fi
+	names=$(head -c $((16 + len)) "$asar" \
+		| LC_ALL=C grep -ao '"[^"]*\.orig"' | sort -u | tr '\n' ' ')
+	if [[ -z $names ]]; then
+		pass "No patch backups (*.orig) packed in $asar"
+	else
+		fail "Patch backups packed in $asar: $names"
+	fi
+}
+
 # Locate scripts/verify-patches.sh relative to this file (tests/..).
 _verify_patches_sh() {
 	local d
@@ -120,12 +144,19 @@ validate_app_contents() {
 
 	assert_file_exists "$resources_dir/app.asar"
 	assert_dir_exists "$resources_dir/app.asar.unpacked"
+	assert_asar_no_patch_backups "$resources_dir/app.asar"
 
 	# resources/ and resources/Release/ must be traversable by non-root users:
 	# Electron runs as the user and reads app.asar / the helper from here. A
 	# 0700 dir here crashes launch even though the files inside are readable.
-	assert_dir_traversable "$resources_dir"
-	assert_dir_traversable "$resources_dir/Release"
+	# artifact_dir_modes=lossy means the caller unpacked with a tool that
+	# resets directory modes, so these two would test the tool, not the package.
+	if [[ ${artifact_dir_modes:-} == 'lossy' ]]; then
+		pass "Skipping resources/ traversal checks (unpacker resets dir modes)"
+	else
+		assert_dir_traversable "$resources_dir"
+		assert_dir_traversable "$resources_dir/Release"
+	fi
 
 	# Unpacked native modules: better-sqlite3 + sqlite3 (rebuilt for Electron
 	# 42's V8 14.8) live under the unpacked .webpack tree and must ship as real
@@ -170,7 +201,8 @@ validate_app_contents() {
 # Usage:
 #   run_launch_smoke_test <label> <pkill_match> <run_as> <cmd> [args...]
 #     label        human name for pass/fail messages
-#     pkill_match  pattern for the pkill -f child sweep (may be empty)
+#     pkill_match  pattern for the pkill -f child sweep (may be empty).
+#                  Honoured only when CI is set; see the note below.
 #     run_as       unprivileged user to drop to, or '' to run as-is. The
 #                  deb/rpm install chrome-sandbox setuid-root and the launcher
 #                  does NOT pass --no-sandbox, so Electron refuses to run as
@@ -181,11 +213,62 @@ validate_app_contents() {
 # Missing tools (xvfb-run/dbus-run-session/setsid, or runuser when run_as is
 # set) -> skip, not failure: loud failure on tool absence belongs at the CI
 # workflow layer.
+#
+# The readiness marker alone is blind to one known failure: when the app
+# spawns the helper without the session env (helper-env.sh no-oping on a new
+# bundle), the helper still answers IsReady but picks the no-op `stub`
+# injection backend, so recording works and nothing is ever typed. The
+# helper logs its backend choice on stderr before it answers, and the app
+# relays that into launcher.log; _smoke_check_backend reads that line after
+# the marker and fails on `stub`. See docs/learnings/helper-spawn-env.md.
+#
+# The pkill -f sweep runs only under CI. Every caller's pattern (the
+# /usr/lib/wispr-flow install root, the AppImage path) also matches a
+# developer's live Wispr Flow, so a local run that reaped by pattern would
+# take the real app down with the test's; the sibling project shipped
+# exactly that regression. Locally the process-group kill is the only
+# reaper, which is enough because the install tier (the one path where PAM
+# re-setsid()s the child out of the group) is itself CI-only.
 
 _smoke_launch_pid=''
 _smoke_cache_root=''
 _smoke_xvfb_log=''
 _smoke_pkill_match=''
+
+# Assert the helper picked a real injection backend. The helper's startup
+# stderr is relayed into launcher.log as
+#   [... INFO  wispr_flow_linux_helper::backend] injection: X11 (...)
+#   [... WARN  wispr_flow_linux_helper::backend] injection: stub (no-op) ...
+# The line normally precedes the readiness marker (the helper logs it before
+# it answers IsReady), but the app relays stderr in chunks, so allow a short
+# grace period. No line at all is a failure too: a PASS must be read from
+# the log, never inferred from its absence.
+_smoke_check_backend() {
+	local label="$1" launcher_log="$2"
+	local needle='::backend] injection: '
+	local deadline line backend
+	deadline=$((SECONDS + 5))
+	while ((SECONDS < deadline)); do
+		[[ -f $launcher_log ]] && grep -qF "$needle" "$launcher_log" && break
+		sleep 0.5
+	done
+	line=$(grep -F -m1 "$needle" "$launcher_log" 2>/dev/null)
+	if [[ -z $line ]]; then
+		fail "$label: helper logged no injection backend" \
+			"(no '$needle' line in launcher.log)"
+		return
+	fi
+	backend="${line#*"$needle"}"
+	backend="${backend%%\\n*}"
+	backend="${backend%%\'*}"
+	if [[ $backend == stub* ]]; then
+		fail "$label: helper fell back to the stub injection backend" \
+			"($backend): the session env did not reach the helper" \
+			'(helper-env.sh no-op?)'
+	else
+		pass "$label helper injection backend: $backend"
+	fi
+}
 
 _launch_smoke_cleanup() {
 	if [[ -n $_smoke_launch_pid ]]; then
@@ -215,6 +298,10 @@ _smoke_sandbox_denied() {
 run_launch_smoke_test() {
 	local label="$1" pkill_match="$2" run_as="$3"
 	shift 3
+
+	# CI-only sweep (see the header). Cleared here so both the end-of-run
+	# sweep and the cleanup trap read the same decision.
+	[[ -n ${CI:-} ]] || pkill_match=''
 
 	local skip="Skipping launch smoke test for $label"
 	if ! { command -v xvfb-run && command -v dbus-run-session \
@@ -266,6 +353,7 @@ run_launch_smoke_test() {
 
 	if ((saw_marker == 1)); then
 		pass "$label reached helper-ready state under Xvfb"
+		_smoke_check_backend "$label" "$launcher_log"
 	else
 		local detail exit_code
 		if kill -0 "$_smoke_launch_pid" 2>/dev/null; then
@@ -299,7 +387,8 @@ run_launch_smoke_test() {
 	wait "$_smoke_launch_pid" 2>/dev/null || true
 	# Sweep any electron/helper child that escaped the group (PAM re-setsid
 	# under runuser puts the child in its own session, so the group kill
-	# above misses it — this sweep is the actual reaper there).
+	# above misses it — this sweep is the actual reaper there). Empty
+	# outside CI, so a local run never reaps by pattern.
 	if [[ -n $pkill_match ]]; then
 		pkill -KILL -f "$pkill_match" 2>/dev/null || true
 	fi

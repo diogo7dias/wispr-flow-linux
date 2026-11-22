@@ -54,13 +54,24 @@ _doctor_config_dir() {
 	fi
 }
 
+# The pre-#100 data dir, likewise, when launcher-common.sh is absent.
+_doctor_legacy_data_dir() {
+	if declare -F wispr_legacy_data_dir &>/dev/null; then
+		wispr_legacy_data_dir
+	else
+		printf '%s' "$HOME/Library/Application Support/Wispr Flow"
+	fi
+}
+
 #------------------------------------------------------------------------------
 # Display / session backend.
 #------------------------------------------------------------------------------
 _doctor_check_display() {
 	if [[ -n ${WAYLAND_DISPLAY:-} ]]; then
 		_pass "Display server: Wayland (WAYLAND_DISPLAY=$WAYLAND_DISPLAY)"
-		if [[ ${WISPR_USE_WAYLAND:-} == '1' ]]; then
+		if [[ ${WISPR_USE_X11:-} == '1' ]]; then
+			_info 'Mode: XWayland forced (WISPR_USE_X11=1)'
+		elif [[ ${WISPR_USE_WAYLAND:-} == '1' ]]; then
 			_info 'Mode: native Wayland forced (WISPR_USE_WAYLAND=1)'
 		else
 			_info 'Mode: Electron Ozone auto-detect (default)'
@@ -168,7 +179,8 @@ _doctor_check_input_read() {
 		return
 	fi
 	_fail "/dev/input: none of ${total} event device(s) readable"
-	_info 'Push-to-talk and the in-app shortcut recorder will not work.'
+	_info 'Push-to-talk and the in-app shortcut recorder will not work'
+	_info '(including the shortcut setup step during onboarding).'
 	_info 'Fix (easiest): wispr-flow --install-udev-rules  (installs the rule via pkexec/sudo)'
 	# shellcheck disable=SC2016  # literal $USER: copy-paste remedy
 	_info 'Fix (group, grants both input read + uinput write): sudo usermod -aG input "$USER"  (then re-login)'
@@ -395,6 +407,70 @@ _doctor_check_singleton_lock() {
 }
 
 #------------------------------------------------------------------------------
+# Legacy data dir — builds before issue #100 kept the database under the
+# macOS path. The launcher moves it into the config dir on start; say so
+# while it lingers, and say which copy the app reads when both exist.
+# Silent when there is nothing under ~/Library to report.
+#------------------------------------------------------------------------------
+_doctor_check_legacy_data_dir() {
+	local legacy config_dir launcher_log
+	legacy="$(_doctor_legacy_data_dir)"
+	config_dir="$(_doctor_config_dir)"
+	launcher_log="${XDG_CACHE_HOME:-$HOME/.cache}/wispr-flow/launcher.log"
+	[[ -e $legacy || -L $legacy ]] || return 0
+
+	if [[ -e $config_dir/flow.sqlite ]]; then
+		_warn "Legacy data dir: $legacy is left over"
+		_info "The app reads $config_dir/flow.sqlite and"
+		_info 'ignores the legacy copy. Check it holds nothing you need,'
+		_info 'then remove it.'
+	else
+		_warn "Legacy data dir: $legacy is not moved yet"
+		_info "The launcher moves it into $config_dir on the next start"
+		_info 'while Wispr Flow is closed. If it stays, the launcher log says why:'
+		_info "grep 'Legacy data dir' '$launcher_log'"
+	fi
+}
+
+#------------------------------------------------------------------------------
+# Open at login — the XDG autostart entry linux-autostart.sh writes when the
+# setting is turned on. Silent when there is none. The entry's TryExec= names
+# the launcher (or the AppImage's path); desktops skip it once that is gone,
+# and the app repairs it the next time it is started from where it now is.
+# An entry without TryExec= (a hand-written one) is checked by its quoted
+# Exec= path, when it has the plain form.
+#------------------------------------------------------------------------------
+_doctor_check_autostart() {
+	local entry line target=''
+	entry="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/wispr-flow.desktop"
+	[[ -f $entry ]] || return 0
+
+	if grep -qE '^(Hidden=true|X-GNOME-Autostart-enabled=false)[[:space:]]*$' \
+		"$entry"; then
+		_pass "Open at login: off (disabled in $entry)"
+		return
+	fi
+	line="$(grep -m1 '^TryExec=' "$entry")" || line=''
+	if [[ -n $line ]]; then
+		target="${line#TryExec=}"
+		target="${target//\\\\/\\}"
+	else
+		line="$(grep -m1 '^Exec=' "$entry")" || line=''
+		# Only the plain quoted form is checked; an escaped path is skipped
+		# rather than guessed at.
+		if [[ $line =~ ^Exec=\"([^\"\\\`\$]+)\"\ --hidden$ ]]; then
+			target="${BASH_REMATCH[1]//%%/%}"
+		fi
+	fi
+	if [[ -n $target ]] && ! command -v -- "$target" >/dev/null; then
+		_warn "Open at login: $entry starts $target, which is missing or not executable"
+		_info 'Start Wispr Flow once from where it is now to repair it.'
+		return
+	fi
+	_pass "Open at login: on ($entry)"
+}
+
+#------------------------------------------------------------------------------
 # Electron runtime — the renamed Electron binary the launcher exec's must exist
 # and be executable. Version is read from the sibling 'version' file rather than
 # launching Electron (which can hang).
@@ -552,6 +628,8 @@ run_doctor() {
 	_doctor_check_desktop_entry
 	_doctor_check_disk_space
 	_doctor_check_singleton_lock
+	_doctor_check_legacy_data_dir
+	_doctor_check_autostart
 	_doctor_check_recent_crashes
 	echo
 

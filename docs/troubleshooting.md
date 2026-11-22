@@ -31,6 +31,81 @@ It prints `[PASS]` / `[WARN]` / `[FAIL]` lines with inline fix commands, grouped
 The exit status is non-zero if any check FAILs. Do me a favor and attach the
 full output to bug reports — it's the single most useful thing you can hand me.
 
+## Push-to-talk doesn't fire / shortcut recorder captures no keystrokes (including during onboarding)
+
+The in-app shortcut recorder (including the one on the onboarding setup screen)
+and push-to-talk are both fed entirely by `KeypressEvent` frames the helper
+streams from the OS key layer. If those frames never arrive, the recorder shows
+nothing and captures nothing — the app has no other path for global hotkey input.
+
+The helper has two capture backends:
+
+- **evdev** (`/dev/input/event*`) — works on Wayland **and** X11. Needs read
+  access to the input devices.
+- **XInput2** — true X11 sessions only (not XWayland). Needs no device access.
+
+On **Wayland**, only evdev is available, and it needs the udev access grant.
+
+### Fix
+
+Run the built-in diagnostics first — the `Push-to-Talk (input monitor)` section
+will tell you exactly what's missing:
+
+```bash
+wispr-flow --doctor
+```
+
+If it prints `[FAIL] /dev/input: none of N event device(s) readable`, install
+the udev rule that grants your session access to input devices (this is a
+one-time step; it survives reboots):
+
+```bash
+wispr-flow --install-udev-rules
+```
+
+The command escalates via `pkexec` (graphical sudo prompt) or falls back to
+`sudo`. After it completes you may need to **log out and back in** (or replug
+your keyboard) for the new ACL to take effect on already-open devices. Then
+re-run `--doctor` to confirm the check passes and try the shortcut recorder
+again.
+
+Alternatively, if you're already a member of the `input` group (check with
+`id -nG | grep input`), just re-login — logind should grant uaccess on session
+start.
+
+> [!NOTE]
+> On **X11** the helper uses XInput2, which needs no device access at all. If
+> the shortcut recorder is still dead on X11 after confirming the helper is
+> running (`--doctor` shows the helper launch as OK), file a bug with the
+> full `--doctor` output.
+
+## Push-to-talk is blank in Settings, or bound to a key that does nothing
+
+Before the `linux-main-shortcut-defaults.sh` patch, a fresh Linux profile was
+seeded with the macOS shortcut map, and its push-to-talk key has no Linux
+keycode. The stored binding is the `-1` sentinel:
+
+```json
+"shortcuts": { "-1": "ptt", "-1+32": "popo", "-1+162": "lens" },
+"modifierShortcut": "9"
+```
+
+Settings renders that binding blank and no key can ever match it. Current
+builds seed `162+91` (Ctrl+Meta) instead, but the patch only changes what a
+**new** profile gets. A profile created by an older build keeps its `-1`
+entries across upgrades.
+
+### Fix
+
+Open Settings → Shortcuts and record a new push-to-talk key (Ctrl+Meta is the
+default the patch seeds). Do the same for any other shortcut that shows
+blank. If the recorder captures nothing, that is the helper key monitor, not
+this bug: see the section above.
+
+To start over instead, quit the app and delete the `shortcuts` and
+`modifierShortcut` keys from `~/.config/Wispr Flow/config.json`; the next
+launch reseeds them with the Linux map.
+
 ## Paste does nothing / transcription doesn't get typed into my app
 
 This is the whole reason the app exists, so when it goes silent it hurts. In my
@@ -66,6 +141,53 @@ Run `--doctor` and work the failures top-down:
 3. **Not in the `input` group and no uaccess ACL** — some distros don't ACL
    uinput through logind (Arch is the one that caught me), so group membership
    is your grant path instead. Go back to step 1's `usermod` and relogin.
+
+4. **`wl-copy` hangs instead of returning (Wayland)** — `wl-clipboard` is
+   installed and `--doctor` is all-green, but the log shows `gRPC transcription
+   successful` followed by `PasteText: Request timed out`, and nothing reaches
+   the focused app. Check whether the clipboard tool returns at all:
+
+   ```bash
+   printf 'test' | timeout 4 wl-copy; echo "$?"   # 124 means it hung
+   pgrep -x wl-copy                               # stray copies piling up
+   ```
+
+   Why it hangs is not established. On a compositor with no data-control
+   protocol, `wl-clipboard` falls back to mapping a surface that has to take
+   keyboard focus before it can own the selection, and a daemon's `wl-copy`
+   never gets that focus. Mutter has advertised `ext-data-control` since
+   GNOME 48, though, and the helper's own in-process clipboard source relies
+   on it (see [wayland-injection.md](learnings/wayland-injection.md)), so on
+   a current GNOME that fallback should not be in play. Whatever the cause,
+   routing `wl-copy` through `xclip`, which reaches the clipboard over
+   Xwayland, gets around it. Use a shim earlier in `PATH` than `/usr/bin`
+   (needs `xclip` and a running Xwayland):
+
+   ```bash
+   #!/bin/bash
+   # ~/.local/bin/wl-copy
+   sel=clipboard
+   type=
+   while [[ $# -gt 0 ]]; do
+   	case "$1" in
+   		-p | --primary) sel=primary ;;
+   		-t | --type) shift; type="$1" ;;
+   		--type=*) type="${1#--type=}" ;;
+   		-*) ;;
+   		*) break ;;
+   	esac
+   	shift
+   done
+   [[ -z $type || $type == text/plain* ]] &&
+   	exec xclip -selection "$sel" -i
+   exec xclip -selection "$sel" -t "$type" -i
+   ```
+
+   > [!NOTE]
+   > Seen on GNOME Shell 50.2 / mutter 50.2 / wl-clipboard 2.3.0 (CachyOS,
+   > Wayland). GNOME paste is validated working on Ubuntu 24.04 / GNOME —
+   > see [compatibility.md](compatibility.md) — so this is not GNOME-wide.
+   > Run the check above before assuming it's your problem.
 
 Want the why behind all this? See
 [configuration.md](configuration.md#text-injection-devuinput-access) for how the
@@ -122,6 +244,68 @@ a table that was never created. The launcher has to be renamed to `wispr-flow`:
 
 I wrote the whole thing up in
 [learnings/ispackaged-rename.md](learnings/ispackaged-rename.md).
+
+## Dictation history is empty after an update
+
+The app starts signed in, but the Hub shows no past dictations, notes or
+dictionary words.
+
+### Fix
+
+Earlier builds kept the database in
+`~/Library/Application Support/Wispr Flow`. The launcher moves that directory
+into `~/.config/Wispr Flow` on the first start after the update. It skips the
+move while Wispr Flow is still running, and when any file in it would
+overwrite one already in `~/.config/Wispr Flow`. `--doctor` says which case
+you are in:
+
+```bash
+wispr-flow --doctor | grep -A3 'Legacy data dir'
+grep 'Legacy data dir' ~/.cache/wispr-flow/launcher.log
+```
+
+If Wispr Flow was running during the update, quit it from the tray and start
+it again. If a file clashes, the new database in `~/.config/Wispr Flow` only
+holds what you did since the update. To keep the old history instead, quit
+Wispr Flow and move the new copies aside:
+
+```bash
+cd ~/.config/Wispr\ Flow
+mkdir -p ../wispr-flow-after-update
+mv flow.sqlite flow.sqlite-wal flow.sqlite-shm ../wispr-flow-after-update/ 2>/dev/null
+```
+
+The next start moves the old directory in.
+
+## Wispr Flow starts at login but no window opens
+
+After logging in, the status pill is there, but the Hub window doesn't open.
+
+### Fix
+
+That is the intended login start. "Open at login" launches with `--hidden`,
+the same as on Windows and macOS. Open the Hub from the tray icon, or start
+Wispr Flow again from your app launcher. A second launch brings up the Hub
+of the running instance. Stock GNOME has no tray without an extension, so
+there the app launcher is the way in.
+
+To stop starting at login, turn off "Open at login" in Settings, or disable
+the entry in your desktop's startup-apps settings. `wispr-flow --doctor`
+shows which applies. It also warns when an AppImage entry points at a file
+that has moved; starting the AppImage once from its new location repairs it.
+
+## "Open at login" is on but Wispr Flow does not start at login
+
+The toggle in Settings shows the saved preference, which is on by default,
+and an older build never wrote an autostart entry for it.
+
+### Fix
+
+Turn "Open at login" off and on again. That writes
+`~/.config/autostart/wispr-flow.desktop`, and `wispr-flow --doctor` then
+reports `Open at login: on`. Disabling the entry in your desktop's
+startup-apps settings does not change the toggle, which keeps showing the
+preference.
 
 ## App won't start from a terminal
 
@@ -184,6 +368,37 @@ rm -f ~/.config/Wispr\ Flow/SingletonLock
 And yes, `--doctor` flags a stale lock under its singleton-lock check, so you
 don't have to go looking for it yourself.
 
+## Clicks near the status pill are swallowed, or the pill's buttons don't respond, on Wayland
+
+The status pill sits in a transparent always-on-top window that is larger
+than the pill you see. On X11 the launcher can shape that window so only the
+painted pill takes input; on native Wayland there is no input-shaping
+protocol, so a compositor either treats the whole transparent box as
+clickable (clicks near the pill never reach the app underneath) or, once the
+window is set click-through, keeps the pill's own hover buttons out of reach.
+GNOME can get shaping back through the helper's shell extension; KDE,
+Hyprland and the other wlroots compositors have nothing yet.
+
+### Fix
+
+Run the app under XWayland, which brings the X11 behaviour back on every
+compositor. The trade-off is blurry HiDPI scaling on a fractional-scale
+display.
+
+```bash
+# One-off:
+WISPR_USE_X11=1 wispr-flow
+
+# Persistent:
+echo 'export WISPR_USE_X11=1' >> ~/.profile
+```
+
+Only the toolkit backend changes. Text injection still goes through the
+Wayland path (`/dev/uinput` and `wl-clipboard`), so nothing else in
+`--doctor` should move; its display line reports `Mode: XWayland forced`.
+If the dead zone is still there under XWayland, that is a different bug:
+open an issue with `--doctor` output and say which compositor.
+
 ## Selection reads come back empty
 
 `GetSelectedTextViaCopy` returns nothing in some apps.
@@ -235,6 +450,27 @@ to the `[WARN]` lines from Step 0 for which one.
    ```
 
 See the helper section of [building.md](building.md#the-clean-room-helper-prebuilt-with-a-helper_bin-override).
+
+## "Secure credential storage is unavailable on this device."
+
+Connecting an app through Wispr Flow's extension connections fails with
+this error. Dictation is unaffected.
+
+### Fix
+
+Wispr Flow keeps connector tokens in Electron's safeStorage, and on Linux it
+refuses to when no Secret Service keyring is running, because Electron would
+then fall back to a fixed key. GNOME and KDE start one for you. On other
+desktops, install and start one, then restart Wispr Flow:
+
+```bash
+sudo apt install gnome-keyring    # or: sudo dnf install gnome-keyring
+```
+
+`gnome-keyring-daemon` must be running in your session (most display
+managers start it through PAM; under a bare window manager, start it from
+your session startup). KDE users with KWallet disabled should enable it in
+System Settings.
 
 ## More
 

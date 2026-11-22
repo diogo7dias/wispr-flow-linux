@@ -41,6 +41,9 @@ them, they win. Read them before opening a non-trivial issue or PR.
   shell conventions (forked from YSAP). Tabs, 80 cols, `[[ ]]`, no `set -e`.
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting; what's in scope vs.
   what belongs to Wispr.
+- [`MAINTAINING.md`](MAINTAINING.md) — how the four org repos fit, triage
+  rules and labels, per-repo release steps, the bump-failure runbook, and what
+  always waits for a maintainer's yes. Read it before triaging or reviewing.
 
 This file is a fast reference for the highest-leverage rules and the project's
 accumulated conventions. New policy goes in the style guides or CONTRIBUTING.md.
@@ -72,8 +75,10 @@ The project spans **two repositories** under the `wispr-flow-linux` org:
   via the `HELPER_BIN` env var (build-linux.sh resolves it).
 
 > The hosted distribution layer — the `gh-pages` APT/DNF tree, the `v*` tag
-> Releases, the gated publish/heartbeat workflows, and a `wispr-flow-linux/worker`
-> Cloudflare Worker fronting `pkg.wispr-flow-linux.dev`
+> Releases, the publish/heartbeat workflows, and a `wispr-flow-linux/worker`
+> Cloudflare Worker fronting `pkg.wispr-flow-linux.dev` — is maintainer-run
+> and fails closed with no human gate (D-011). See `RELEASING.md` and the
+> "Pull request policy" in `CONTRIBUTING.md` before touching it.
 
 This repo's tree:
 
@@ -82,11 +87,22 @@ This repo's tree:
   `--doctor`).
 - `scripts/`
   - `setup/` — host detection, dependency install, Wispr Flow / Electron
-    download helpers.
+    download helpers. `installer-pin.sh` is the pinned upstream installer
+    (version, URL, sha256): builds download exactly that and verify it;
+    only `check-wispr-version.yml` resolves upstream's `latest.json`
+    (`resolve-installer-url.sh`) and rewrites the pin
+    (`write-installer-pin.sh`).
   - `patches/` — the app patches: `helper-resolver.sh` (adds the `'linux'`
     helper-path branch), `mac-gates.sh` (gates the macOS Applications-folder
     guard to darwin), and the V8 14.8 `better-sqlite3-multiple-ciphers` compat
-    patch. `verify-patches.sh` static-greps the repacked bundle for the markers.
+    patch. `_lib.sh` is the shell they share (bundle resolution, marker
+    guard, `.orig` backup, post-patch marker/shape/syntax checks with
+    restore); `tripwires.tsv` lists the upstream literals each patch depends
+    on with their pristine counts, and `scripts/check-upstream-tripwires.sh`
+    runs them over an unpatched tree (step 3 before the first patch, the
+    patch-stage test, the nightly bump pre-check) so "upstream changed the
+    thing" fails by name before an anchor can miss. `verify-patches.sh`
+    static-greps the repacked bundle for the markers.
   - `packaging/` — `deb.sh`, `rpm.sh`, `appimage.sh` makers; shared signature
     `<maker>.sh <dist_dir> <version> <arch>`.
   - `launcher-common.sh` — the runtime `/usr/bin/wispr-flow` launcher library.
@@ -180,6 +196,11 @@ when you discover something non-obvious that would save the next contributor
   for identifiers, anchor on developer strings over churning names, assert the
   match count, inject a marker for idempotency, and verify against shipped bytes
   (not a beautified copy). Read before touching `scripts/patches/`.
+- [`test-methodology.md`](docs/learnings/test-methodology.md) — how a green
+  shell test earns its colour: `run` subshells away counter mutations, anchors
+  need a near-miss fixture, one FAIL branch must hit the real tool, `[PASS]`
+  only on parsed data, and the mutation check (revert the fix, watch a test go
+  red). Read before adding or reviewing a bats test.
 
 ## Cross-VM testing memory
 
@@ -199,24 +220,36 @@ knowledge.
 - CI gates (`.github/workflows/ci.yml`): shellcheck, codespell, flag-parsing,
   and bats, run on every push/PR. On a `v*` tag, the same workflow runs the
   build→test→release→APT/DNF/AUR publish chain. See [`RELEASING.md`](RELEASING.md).
+- Claude Code hooks (`.claude/settings.json`): `.claude/hooks/pre-pr-lint.sh`
+  runs the CI shellcheck line, codespell over tracked files, actionlint on
+  changed workflows and (when a shell or bats file changed) `bats tests/*.bats`
+  before any `git push`, and blocks the push on a failure;
+  `.claude/hooks/session-start.sh` installs the missing tools at session start
+  with a passwordless sudo, or says which are missing.
 
-### Attribution
+### Issues, PRs, and commits
 
-For PR descriptions, include full attribution:
+Keep them short and plain. An issue says what is wrong and what should be
+true instead, in a few sentences. A PR says what changed and why this way,
+enough for a reviewer to decide where to look. The evidence (test counts,
+command output, the reasoning that ruled out the obvious approach) goes in
+the commit body, where someone deep-diving is already reading, and the diff
+is the authority over both. No headers, no checklists, no bullet retelling of
+the diff, no em-dashes. Say what was deliberately left out.
+
+Reference the issue with `Fixes #123` (or `Refs #123`). A commit subject
+states what changed; the body states why, with the evidence. Credit reused or
+cherry-picked contributor work by handle, in the body.
+
+AI-assisted work discloses with one trailer line at the end of a PR or issue
+body, using the actual model name:
 
 ```
----
-Generated with [Claude Code](https://claude.ai/code)
-Co-Authored-By: Claude <model-name> <noreply@anthropic.com>
-<XX>% AI / <YY>% Human
-Claude: <what AI did>
-Human: <what human did>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ```
 
-Use the actual model name (e.g., `Claude Opus 4.8`); keep the split honest. For
-issues/comments use the simplified form
-`Written by Claude <model-name> via [Claude Code](https://claude.ai/code)`. For
-commits, include a `Co-Authored-By: Claude <claude@anthropic.com>` trailer.
+Commits carry `Co-Authored-By: Claude <claude@anthropic.com>`. Comments carry
+no trailer.
 
 ## File size limit
 

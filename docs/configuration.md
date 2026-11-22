@@ -20,11 +20,13 @@ input-method overrides the claude-desktop reference had.
 | Variable | Default | Description |
 |---|---|---|
 | `WISPR_USE_WAYLAND` | unset | Set to `1` to force native Wayland (Ozone): pins `--ozone-platform=wayland`, enables the Wayland IME path, and exports `GDK_BACKEND=wayland`. Without it, Electron 42 auto-detects Wayland/X11. |
+| `WISPR_USE_X11` | unset | Set to `1` on a Wayland session to run the app under XWayland (`--ozone-platform=x11`). The status pill then gets X11-style click-through on every compositor, at the cost of blurry HiDPI scaling. Wins over `WISPR_USE_WAYLAND` when both are set; does nothing on an X11 session. The helper is unaffected: it still sees `WAYLAND_DISPLAY` and keeps the `/dev/uinput` injection path. |
 | `WISPR_DISABLE_GPU` | unset | Set to `1` to pass `--disable-gpu --disable-software-rasterizer`. Workaround for blank windows / GPU-process crashes on broken drivers or remote sessions. Also applied automatically inside XRDP sessions. |
 
 ```bash
 # One-off:
 WISPR_USE_WAYLAND=1 wispr-flow
+WISPR_USE_X11=1 wispr-flow
 WISPR_DISABLE_GPU=1 wispr-flow
 
 # Persistent:
@@ -36,12 +38,17 @@ echo 'export WISPR_DISABLE_GPU=1' >> ~/.profile
 > Wispr Flow's keystroke injection uses an in-process `/dev/uinput` virtual
 > keyboard (not X11 XTEST global hotkeys), so native Wayland is the validated
 > default. See [learnings/wayland-injection.md](learnings/wayland-injection.md).
+> `WISPR_USE_X11=1` is the way back to XWayland when a compositor has no
+> Wayland input-shaping path for the status pill (see
+> [troubleshooting](troubleshooting.md#clicks-near-the-status-pill-are-swallowed-or-the-pills-buttons-dont-respond-on-wayland)).
 
 ## Where state lives
 
 | Path | Contents |
 |---|---|
-| `~/.config/Wispr Flow/` | Electron app config + state (the productName is `Wispr Flow`, so the config dir has a space). Includes `SingletonLock`. |
+| `~/.config/Wispr Flow/` | Electron app config + state (the productName is `Wispr Flow`, so the config dir has a space). Includes `SingletonLock`, the `flow.sqlite` database, and the `meetings/` and `backups/` directories. Follows `$XDG_CONFIG_HOME`. |
+| `~/Library/Application Support/Wispr Flow/` | Where earlier builds kept the database (#100). The launcher moves it into `~/.config/Wispr Flow/` on the first start after the update, and `--doctor` warns while it remains. |
+| `~/.config/autostart/wispr-flow.desktop` | The "Open at login" entry, written when you turn the setting on and removed when you turn it off. Its `Exec=` passes `--hidden`, so a login start keeps the Hub closed. Your desktop's startup-apps settings can disable it. |
 | `~/.cache/wispr-flow/launcher.log` | Launcher log — display backend, GPU decision, session env block, stale-lock cleanup. Attach this to bug reports. |
 
 ```bash

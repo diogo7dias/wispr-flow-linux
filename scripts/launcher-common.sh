@@ -11,6 +11,8 @@
 #
 # Env var convention: WISPR_* (not CLAUDE_*). Supported overrides:
 #   WISPR_USE_WAYLAND=1   force native Wayland (Electron Ozone)
+#   WISPR_USE_X11=1       force XWayland (Electron Ozone X11) on a Wayland
+#                         session; wins over WISPR_USE_WAYLAND when both set
 #   WISPR_DISABLE_GPU=1   disable GPU / software rasterizer (blank-window
 #                         workaround on broken drivers / remote sessions)
 #
@@ -30,6 +32,13 @@ readonly WM_CLASS='Wispr Flow'
 # Exposed as a function so doctor.sh and cleanup_stale_lock agree on it.
 wispr_config_dir() {
 	printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/Wispr Flow"
+}
+
+# Where Linux builds before the XDG data-dir patch (issue #100) kept the
+# database, meetings, backups and extension state: the macOS path.
+# Shared with doctor.sh so the launcher and --doctor agree on it.
+wispr_legacy_data_dir() {
+	printf '%s' "$HOME/Library/Application Support/Wispr Flow"
 }
 
 # Setup logging directory and file.
@@ -67,6 +76,7 @@ log_session_env() {
 		DISPLAY \
 		XDG_CURRENT_DESKTOP \
 		WISPR_USE_WAYLAND \
+		WISPR_USE_X11 \
 		WISPR_DISABLE_GPU
 	do
 		log_message "  $key=${!key:-}"
@@ -88,7 +98,8 @@ check_display() {
 # uses an in-process /dev/uinput virtual keyboard (not X11 XTEST global
 # hotkeys), so native Wayland is the validated default. WISPR_USE_WAYLAND
 # is retained as an explicit override that maps to native Ozone Wayland
-# flags in build_electron_args.
+# flags in build_electron_args; WISPR_USE_X11 is the opposite override
+# (XWayland), for compositors with no Wayland input-shaping path.
 detect_display_backend() {
 	is_wayland=false
 	[[ -n ${WAYLAND_DISPLAY:-} ]] && is_wayland=true
@@ -150,7 +161,22 @@ build_electron_args() {
 	fi
 
 	# Wayland session.
-	if [[ ${WISPR_USE_WAYLAND:-} == '1' ]]; then
+	if [[ ${WISPR_USE_X11:-} == '1' ]]; then
+		# Explicit XWayland opt-in: pin the Ozone X11 platform so the app's
+		# windows are X11 clients under XWayland. That gives the status pill
+		# XShape click-through on every compositor (native Wayland has no
+		# input-shaping path outside a compositor extension) at the cost of
+		# HiDPI blur. Only the toolkit backend changes: the helper still
+		# sees WAYLAND_DISPLAY and keeps the uinput injection path. No
+		# GDK_BACKEND export here, unlike the Wayland branch: Chromium
+		# already pins GTK to its Ozone platform, and an exported x11 value
+		# would leak into every process the app spawns (xdg-open, the
+		# browser it launches for links).
+		[[ ${WISPR_USE_WAYLAND:-} == '1' ]] && log_message \
+			'WISPR_USE_WAYLAND=1 and WISPR_USE_X11=1 both set - X11 wins'
+		log_message 'WISPR_USE_X11=1 - XWayland (Ozone X11) backend'
+		electron_args+=('--ozone-platform=x11')
+	elif [[ ${WISPR_USE_WAYLAND:-} == '1' ]]; then
 		# Explicit native-Wayland opt-in: pin the Ozone Wayland platform
 		# and enable the Wayland IME path.
 		log_message 'WISPR_USE_WAYLAND=1 - native Wayland (Ozone) backend'
@@ -204,6 +230,61 @@ cleanup_stale_lock() {
 
 	rm -f "$lock_file"
 	log_message "Removed stale SingletonLock (PID $lock_pid no longer running)"
+}
+
+# Move app data from the legacy macOS path into the XDG config dir, once.
+# linux-xdg-data-dir.sh points the app's data dir at wispr_config_dir();
+# without this, an existing install would start on an empty database while
+# its history sat in ~/Library. Runs after cleanup_stale_lock, before
+# Electron starts, so the app never has the database open mid-move.
+#
+# All or nothing: skipped while any instance holds the SingletonLock (an
+# older build still running from the legacy path), and skipped when any
+# entry would overwrite one already in the XDG dir. A skip is logged and
+# the legacy dir stays for --doctor to report. Empty legacy parents
+# (~/Library/Application Support, ~/Library) are removed with rmdir, which
+# refuses anything that still has content.
+migrate_legacy_data_dir() {
+	local legacy target lock entry name
+	legacy="$(wispr_legacy_data_dir)"
+	target="$(wispr_config_dir)"
+	lock="$target/SingletonLock"
+
+	[[ -d $legacy ]] || return 0
+
+	if [[ -e $lock || -L $lock ]]; then
+		log_message "Legacy data dir not moved: an instance holds $lock"
+		return 0
+	fi
+
+	local entries=()
+	shopt -s nullglob dotglob
+	entries=("$legacy"/*)
+	shopt -u nullglob dotglob
+
+	for entry in "${entries[@]}"; do
+		name="${entry##*/}"
+		if [[ -e $target/$name || -L $target/$name ]]; then
+			log_message "Legacy data dir not moved: $target/$name exists"
+			return 0
+		fi
+	done
+
+	mkdir -p "$target" || {
+		log_message "Legacy data dir not moved: cannot create $target"
+		return 1
+	}
+	for entry in "${entries[@]}"; do
+		if ! mv -- "$entry" "$target/"; then
+			log_message "Legacy data dir move failed at $entry"
+			return 1
+		fi
+	done
+
+	# rmdir refuses a non-empty dir; that refusal is the point, not an error.
+	rmdir -- "$legacy" "${legacy%/*}" "$HOME/Library" 2>/dev/null || true
+	log_message "Moved ${#entries[@]} entries from $legacy to $target"
+	return 0
 }
 
 #===============================================================================

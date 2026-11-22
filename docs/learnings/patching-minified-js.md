@@ -26,15 +26,16 @@ asar ships broken JS.
 
 Use `[\w$]+` (repo convention; `[$\w]+` is equivalent). Strict superset of
 `\w+`, so pre-`$` versions still match. Every patch in `scripts/patches/` keys
-on it — e.g. `helper-resolver.sh:119` captures both the `fs` module and the
-path variable out of the resolver's existence guard:
+on it — e.g. `helper-resolver.sh` reads the logger accessor out of a developer
+log line, then spends it in the ternary-head anchor and the injected code:
 
 ```python
-r'(?P<guard>if\(!(?P<fs>[\w$]+)\(\)\.existsSync\((?P<var>[\w$]+)\)\))'
+r'([\w$]+)\(\)\.info\("Running packaged Windows Helper service"'
 ```
 
-With `\w+` a minified `if(!$e().existsSync($t))` would capture `e`/`t` and the
-rewrite would reference identifiers that aren't in the file.
+With `\w+` a minified `$e().info("Running packaged…")` would capture `e`, and
+the injected `e().info(…)` would reference an identifier that isn't in the
+file.
 
 ## The beautified false-negative trap
 
@@ -72,6 +73,50 @@ Reserve `\s*` for crossing structural boundaries on purpose. The
 bounded enough that newline-spanning is harmless, and literal token sequences
 (`"win32"===process.platform`, `titleBarStyle:"hidden"`) where stricter
 adjacency is the whole point of the anchor.
+
+## Quote style: `"` is not stable either
+
+Whitespace tolerance assumes the *tokens* hold still and only the spacing
+moves. The sibling project (claude-desktop-debian) had that assumption broken
+by a bundler swap: every short string literal flipped from `"` to backticks in
+one release (46,526 double-quoted literals became 3,050; backticked went from
+429 to 44,701). Four of its ten anchors matched on a `"`-delimited literal and
+went to zero. The build-fatal ones failed the build, which is what the guards
+are for, but the diagnosis cost a triage cycle because "anchor not found" reads
+as "upstream deleted the feature" and the feature was untouched.
+
+Wispr's webpack bundle emits `"` today (`"win32"===process.platform`,
+`titleBarStyle:"hidden"`), so every anchor in `scripts/patches/` pins the
+delimiter. **Never write a bare quote in a new anchor.** Build the class once
+in the Python heredoc and concatenate it:
+
+```python
+Q = r'[`"\']'                       # any JS string delimiter
+anchor = re.compile(
+    Q + r'win32' + Q + r'===process\.platform')
+```
+
+Two related shifts tend to land with a bundler swap, so treat it as a class of
+breakage rather than one delimiter change:
+
+- **Callee indirection.** `X.spawn(` becomes `(0,ye.spawn)(`. Wispr's bundle
+  already emits this shape as the default (the hub window config reads
+  `(0,N.Pv)(d.RA.prefs?.user.email||"")`, the alpha-poll sites read
+  `(0,l.Bi)(`), so a call-site anchor wants
+  `(?:\(0,\s*[\w$]+(?:\.[\w$]+)*\)|[\w$]+)` in front of the paren, not a bare
+  identifier. This is also why PR #74's anchor on the literal
+  `(0,N.Pv)(d.RA.prefs?...` text matches zero sites on the next release: the
+  `N`/`d` are the churn, the `(0,…)(` shape is the constant.
+- **Syntax level.** Optional chaining (`?.`) is preserved rather than
+  downleveled, and `let` replaces most `const`/`var`. `(?:const|let|var)` beats
+  any one of them.
+
+When concatenation is re-emitted as interpolation, a message that was one
+contiguous literal becomes a template with a `${...}` hole in the middle, so an
+anchor spanning that hole breaks even though the delimiter class is right.
+Anchor on the *stable prefix* before the first variable, not the whole
+sentence. `linux-disable-pill-drag.sh` (PR #66) does this: it anchors on
+`[Drag Overlay]: Setting drag overlay state to` and stops before the value.
 
 ## Replacement-string escaping: `\1`, `&`, `$1`
 
@@ -123,13 +168,19 @@ something breaks visibly. The suite uses three patterns:
 
 **Inject a marker comment, guard on it.** Every patch writes a unique
 `WISPR_LINUX_*` marker into its insertion and short-circuits if it's already
-there. `helper-resolver.sh:78-80`:
+there. The guard lives once, in `scripts/patches/_lib.sh`, and each patch
+opens with it:
 
 ```bash
-LINUX_MARKER="WISPR_LINUX_HELPER_BRANCH"
-if grep -q "$LINUX_MARKER" "$BUNDLE"; then
-  echo "Already patched ($LINUX_MARKER present in $BUNDLE) - nothing to do."
+source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
+patch_begin "WISPR_LINUX_HELPER_BRANCH" "${1:-}" "extract/app/.webpack/main/index.js"
 ```
+
+`patch_begin` resolves the bundle, exits 0 on the marker, and writes the
+pristine `.orig` backup once; `patch_verify_marker`, `patch_expect_shape`
+and `patch_finish` do the post-patch marker, shape and `node --check`
+checks and restore the backup on a miss. A patch's own code is the Python
+body between them.
 
 **Key the marker inside the widened predicate.** `linux-window-frame.sh` injects
 its `WISPR_LINUX_FRAMELESS` marker *inside* the widened window-config predicate,
@@ -140,6 +191,35 @@ insertion — a second run sees its own output and the count stays honest.
 checks for the darwin gate sitting immediately before the `getAppPath()` call,
 and treats that as done — separate from the anchor-not-found path, so the build
 log says which one happened.
+
+## Tripwires: tell "upstream changed" from "the anchor missed"
+
+An anchor that finds zero sites says `expected exactly 1, found 0`, which
+reads the same whether upstream removed the feature, moved the statement,
+or renamed a log line. The 1.6.937 helper-resolver break was the middle
+case (every developer string still there, the statement shape gone) and
+took a manual diff to tell apart.
+
+`scripts/patches/tripwires.tsv` lists, per patch, the upstream literals its
+anchor depends on with their count in the pristine bundle: the developer
+log lines, a preload name, a single call shape, and a few zero-count lines
+for things upstream must not have done yet (a Linux arm ahead of the
+helper resolver). `scripts/check-upstream-tripwires.sh` runs the table over
+an unpatched `.webpack/` tree and fails by patch and label on any moved
+count. Step 3 runs it before the first patch (and skips it on a tree the
+first patch already marked, since the counts were checked on the pass that
+marked it); `tests/test-patch-stage.sh` and the nightly bump pre-check run
+it on the pristine tree.
+
+Read the two results together. Every line OK and an anchor miss: the shape
+moved around literals that are still there, re-anchor. A CHANGED line:
+upstream changed the behaviour, re-audit it
+([platform-gates.md](platform-gates.md)) before touching the anchor. Keep
+the counts structural; a bundle-wide total (`"win32"===process.platform`
+went 36 to 37 between 1.6.897 and 1.6.937 for reasons no patch cares
+about) is a false alarm waiting to happen. The one deliberate total is
+upstream's own `"linux"===process.platform` reads, because a new one is
+exactly the re-audit trigger.
 
 ## Anchor selection: prefer literals over identifiers
 
@@ -156,11 +236,15 @@ release; the build log still says "patched."
 
 Two patterns from the suite:
 
-- **Literal → derived identifier (two stages).** `helper-resolver.sh:110`
+- **Literal → derived identifier (two stages).** `helper-resolver.sh`
   anchors on the developer log string `"Running packaged Windows Helper
   service"`, then captures the surrounding minified logger identifier
   (`([\w$]+)\(\)\.info\(…)`) as the actual target. Stable literal locates the
-  site; the dynamic capture supplies the churning name.
+  site; the dynamic capture supplies the churning name. Its insertion point
+  is found the same way: the `isHelperProcessRunningManually` property and
+  the `"Running Dev Mac Helper service"` line bracket the ternary head, and
+  the minified member names between them are matched as `[\w$]+` shapes,
+  never spelled.
 - **Literal-shape anchor + captured var.** `linux-window-frame.sh` pins the
   window-config site on the `"win32"===process.platform` /
   `Object.assign(<var>,{titleBarStyle:"hidden",autoHideMenuBar:!0})` literal
@@ -219,9 +303,105 @@ anchor shape in onboarding text or sample data far from the live site, instead
 of silently patching the wrong one.
 
 When an anchor genuinely isn't unique, narrow the search region first.
-`helper-resolver.sh` scopes its rewrite to the `if(!…existsSync(…))` guard
-region rather than the whole file, so duplicate sub-strings elsewhere can't be
-hit.
+`linux-main-shortcut-defaults.sh` locates the shortcuts module by its
+developer strings and widens the win32 flag only inside that module's
+brace-fenced body, so the same `win?:mac` ternary shape elsewhere in the
+bundle can't be hit (and the flag's other 70-odd reads stay Windows-only).
+
+## Anchors carry unstated assumptions: adjacency, terminus, survival
+
+Stopping an anchor before the part that churns leaves it holding assumptions it
+never states. The sibling project lost the same patch to each of these in
+turn; Wispr's suite has already met the first.
+
+**Adjacency.** An anchor that spans two tokens assumes they stay next to each
+other. PR #73's always-on-top watchdog anchors on `performance.now();if(`; the
+1.5.789 bundle reads `performance.now();var t;if(`. One inserted statement,
+zero matches. The suite's own instance landed on 1.6.897:
+`linux-window-frame.sh` spanned `{titleBarStyle:"hidden",autoHideMenuBar:!0}`
+as exact text, upstream inserted `frame:!1` between the two keys, and the
+count assertion failed the build. The fix matches the object literal as a
+brace-fenced bag of properties (`\{(?=[^{}]*titleBarStyle:"hidden")(?=[^{}]*autoHideMenuBar:!0)[^{}]*\}`),
+so key order and extra keys no longer matter but a `}` still ends the search.
+The sibling's version of this was a function head glued to its
+first destructure until upstream put an `await` in front, which cost four
+consecutive upstream bumps with no release. Leave a bounded prelude between
+the tokens you span, and fence it on braces rather than on `.`:
+
+```python
+r'performance\.now\(\);[^{}]{0,80}if\('
+```
+
+`[^{}]` cannot cross a nested block or leave the function body, so the budget
+buys a couple of simple statements and nothing structural, where `.{0,80}`
+would happily reach past an `if(e){t()}` into an unrelated site. Loosening
+buys back the match at the cost of the uniqueness the tight version got for
+free, so pay for it twice: keep a discriminator past the loosened joint (a
+developer string, a distinctive call) and assert exactly one match.
+`linux-disable-pill-drag.sh` is the suite's instance: it spanned the
+minifier's hoisted `let t,n;` between the handler's `{` and its `if(` as
+exact text (absent on 1.5.789), and now captures that prelude as
+`[^{}]{0,80}?` and reproduces it, with the developer log literal after it
+as the discriminator; its fixtures pin the fence (a `{}` in the prelude
+finds nothing) and the budget (80 characters match, 81 do not).
+
+**Terminus.** The end of an anchor is an assumption too. The sibling's patch
+ended on a `();return` statement shape; the next release moved the value into
+a helper call and the shape dissolved while the function's developer log
+string sat untouched in its body. Statement shapes are the minifier's to
+rearrange; end on a developer literal instead, cut before any interpolation
+so a template re-emission cannot split it. `helper-resolver.sh` met this on
+1.6.937: its anchor ended on the `if(!fs().existsSync(s))` guard that
+followed the helper-path ternary, upstream moved the ternary into its own
+exported module, and the guard was no longer adjacent (the developer log
+lines inside the ternary were untouched). The anchor now ends on the
+`"Running Dev Mac Helper service"` literal at the ternary head and prepends
+the Linux case there, which holds for the inline and the exported shape
+alike, and the logger name is still captured from the packaged-Windows line.
+
+A body budget generous enough for the real function is also generous enough
+to absorb the patch's own injected code on a re-run. Brace the injected gate
+(`if(…){return!1}`) so a `[^{}]` fence cannot swallow it, and keep the
+idempotency test: when a mutation on defensive code comes back green, ask what
+else is covering for it.
+
+**Survival.** A patch that locates its own site has a second job: the anchor
+must still match *after* the patch has run, or a second pass fails at
+resolution before the idempotency guard ever executes. Six of the sibling's
+first ten self-resolving anchors failed this. Pick a resolution anchor
+adjacent to the edit rather than through it, or teach it to tolerate the
+patch's own marker. `linux-window-frame.sh` keys its `WISPR_LINUX_FRAMELESS`
+marker *inside* the widened predicate for exactly this reason. Test it
+explicitly: run the whole patch stage twice against one tree and assert the
+second run is a no-op and the repacked asar is byte-identical
+(`linux-patches.bats` does this per patch on fixtures;
+`tests/test-patch-stage.sh` does it against the real pinned bundle, and
+also parses every repacked `.webpack/` file and checks every marker).
+
+## Resolve the target file, don't name it
+
+Wispr's main process is one file, `.webpack/main/index.js`, and every main
+patch hardcodes that path. The sibling's main process was one file for years
+too, until upstream code-split it into an entry stub plus content-hashed
+chunks whose names change every release. Every patch anchored on the old path
+silently missed; the fatal ones failed the build, the warn-only ones shipped
+an under-patched asar. Two releases later the split deepened and "resolve one
+main file, hand it to every patch" stopped working as well.
+
+The durable shape is per-anchor resolution: grep the whole bundle tree for the
+anchor's stable literal, assert exactly one file carries the *full anchor
+shape* (not just the distinctive string, which can recur in a decoy chunk),
+patch that file. `linux-renderer-treat-as-windows.sh` is already there for the
+renderer side: `build-linux.sh` grep-filters `.webpack/renderer/*/index.js`
+for the renderers that read `platform?.isWindows` rather than naming them. If
+`.webpack/main/` ever grows a second file, do the same for main.
+
+Two mechanical footnotes. Resolve with `grep -lPz`, not `grep -lP`: bare `-P`
+is line-oriented, so a `\s*` cannot cross a newline and a beautified copy
+reports the anchor missing (the beautified false-negative trap, now in the
+resolver). And confirm uniqueness *within the resolved file*, not across the
+tree: a literal unique in one 8 MB file can recur across chunks in source-map
+tails and dead re-exports.
 
 ## Verifying a hypothesis before shipping a fix
 
@@ -253,7 +433,11 @@ node -e '
 `resolve-installer-url.sh` tracks the upstream `latest` redirect and does **not**
 pin a SHA-256 (the build logs `No SHA-256 hash … skipping verification`), so
 "the current bytes" is whatever `latest` resolves to right now — re-pull before
-testing rather than trusting a stale local extract.
+testing rather than trusting a stale local extract. Since September 2026 that
+redirect lands on an unversioned bootstrapper stub and the resolver fails;
+until the pin-file rework lands, take the direct `Setup-v<ver>.exe` URL and
+its sha256 from `https://dl.wisprflow.com/wispr-flow/win32/latest.json` and
+pass it with `--exe`.
 
 ## End-to-end verification (post-build)
 
@@ -298,8 +482,63 @@ Four layers: build log, syntactic validity, asar markers, runtime.
    ran), and the helper IPC handshake completed — far more than a structure
    check.
 
+## One gate, multiple consumers: a marker can't catch a re-armed sibling
+
+A single minified predicate is often read by several independent code paths.
+Patching it at the source flips all of them, some you want and some you don't,
+and a marker check won't catch the ones you didn't because nothing is
+*missing*: the regression is behavioural.
+
+Two live examples from the September 2026 PR queue:
+
+- **The right way.** `"win32"===process.platform` has roughly 79 reads in the
+  main bundle. It gates the shortcut defaults Linux needs, and it also gates
+  registry access, `%LOCALAPPDATA%` paths and Windows exit-code semantics.
+  PR #55's shortcuts patch widens the flag only inside the shortcuts module
+  (eight reads, each a `win?:mac` ternary) and fails closed if any read there
+  is not a ternary. Flipping the flag globally would have "worked" for the
+  symptom and armed every Windows-only OS call behind it.
+- **The wrong way.** PR #73's alpha-threshold patch changes the *default
+  parameter* of the shared click-through poll from 0 to 10. Every consumer of
+  the poll gets the new threshold. Upstream's status renderer deliberately
+  paints its hover bridge at `rgba(0,0,0,0.004)` (alpha 1 of 255) so the poll
+  keeps the pill's hover-only controls reachable; at threshold 10 that bridge
+  becomes click-through and the pointer drops out of the hover chain. The
+  marker is present, `node --check` passes, verify-patches is green, and the
+  pill's globe button stops working.
+
+The sibling's case study was worse: flipping a support evaluator to
+`supported` for Linux un-greyed a tab and simultaneously re-armed a multi-GB
+VM download that a previous patch had disabled, because both read the same
+predicate. Its marker checker was green throughout. The fix was not to
+un-flip the evaluator but to re-block the now-reachable consumers
+individually, and to add a positive marker for the counter-patch so the
+restored invariant had a fingerprint that could go red.
+
+Two rules:
+
+- **Before flipping a shared gate, grep every read of the predicate.**
+  Enumerate the consumers and decide per site which should follow the flip.
+  A patch that works against the symptom you were chasing can arm a sibling
+  you weren't looking at.
+- **Markers verify structure; only a runtime launch verifies behaviour.** When
+  a patch changes a value other code branches on, the post-build launch and a
+  log tail for side effects are not optional. The static layers are blind to
+  a re-armed consumer. See [test-methodology.md](test-methodology.md) for the
+  headless launch smoke test and what it can and cannot prove.
+
 ## Cross-references
 
+- [test-methodology.md](test-methodology.md) — the same discipline on the
+  test side: exactly-one assertions, near-miss fixtures, idempotent re-runs,
+  the mutation check, and the launch smoke test that is the only layer to see
+  a behavioural regression.
+- claude-desktop-debian `docs/learnings/patching-minified-js.md` — the
+  sibling project's copy of this page. The quote-style, adjacency/terminus/
+  survival, file-resolution and shared-gate sections above were ported from
+  it in September 2026 and regrounded on this repo's patches; its examples
+  (a code-split bundle, a bundler swap, a cowork gate) are the ones this
+  suite has not met yet.
 - [platform-gates.md](platform-gates.md) — the darwin/win32 carve-outs Linux
   falls through, the three gate-shape rules, and how to re-audit (and beautify)
   a new Wispr version's bundle. The natural companion when an anchor no-ops.

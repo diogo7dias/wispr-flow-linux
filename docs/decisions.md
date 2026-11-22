@@ -22,6 +22,9 @@ decision date, and an owner.
 | [D-006](#d-006--rename-the-electron-launcher-to-wispr-flow) | 2026-06-04 | Accepted | Rename the Electron launcher to `wispr-flow` |
 | [D-007](#d-007--clean-room-v8-148-patch-for-better-sqlite3-multiple-ciphers) | 2026-06-04 | Accepted | Clean-room V8 14.8 patch for `better-sqlite3-multiple-ciphers` |
 | [D-008](#d-008--async-zbus-on-tokio-never-zbusblocking-for-services) | 2026-06-04 | Accepted | Async zbus on tokio, never `zbus::blocking` for services |
+| [D-009](#d-009--native-sqlite-addons-as-pinned-prebuilt-assets-not-a-build-time-rebuild) | 2026-06-06 | Accepted | Native sqlite addons as pinned prebuilt assets, not a build-time rebuild |
+| [D-010](#d-010--the-installer-is-pinned-in-tree-not-resolved-at-build-time) | 2026-09-21 | Accepted | The installer is pinned in-tree, not resolved at build time |
+| [D-011](#d-011--the-publish-chain-is-ungated-and-fails-closed) | 2026-09-22 | Accepted | The publish chain is ungated and fails closed |
 
 ---
 
@@ -424,3 +427,202 @@ release assets.
 
 - [learnings/electron42-v8-sqlite.md](learnings/electron42-v8-sqlite.md),
   [building.md](building.md#native-sqlite-modules-prebuilt-with-an-opt-in-local-rebuild).
+
+---
+
+## D-010 — The installer is pinned in-tree, not resolved at build time
+
+- **Status:** Accepted
+- **Decided:** 2026-09-21
+- **Owner:** @aaddrick
+
+### Context
+
+Until this decision every build, local or CI, asked upstream what "latest" was
+(`scripts/setup/resolve-installer-url.sh` followed Wispr's stable redirect) and
+downloaded whatever came back. A version constant in `build.sh` was the only
+guard: the build aborted when the resolved version differed from it. Two things
+broke that model at once in August 2026. Wispr repointed the redirect at a
+versionless web-bootstrap stub with no payload, so the resolver died and every
+`./build.sh` without `--exe` failed ([#83](https://github.com/wispr-flow-linux/wispr-flow-linux/issues/83)).
+And [#55](https://github.com/wispr-flow-linux/wispr-flow-linux/pull/55) showed
+that `helper-env.sh` had been a silent no-op on 1.6.7xx+ bundles, which is the
+class of drift a live resolve exists to ship. The nightly bump workflow pushes
+a `v*` tag with no human gate, so a working resolver alone would have re-armed
+the publish chain against a bundle nobody had re-audited.
+
+The sibling project (claude-desktop-debian) had already moved to a pinned
+artifact: `official-deb.sh` holds version, pool path and SHA-256 per arch, the
+build downloads exactly that, and only its bump workflow queries the index.
+
+### Decision
+
+The upstream installer is **pinned in-tree** in
+[`scripts/setup/installer-pin.sh`](../scripts/setup/installer-pin.sh): version,
+download URL and SHA-256, one assignment per line. `build.sh` sources it for
+`APP_VERSION`; `download.sh` downloads exactly the pinned URL and refuses the
+file unless its digest matches; CI does the same. `--exe` remains the local
+override and is never rejected, only warned about when its digest is not the
+pin's. Nothing in the build path resolves "latest".
+
+Only `check-wispr-version.yml` looks upstream, via the JSON manifest the
+bootstrapper itself reads (`latest.json`: versioned full-installer URL plus a
+published SHA-256). It rewrites the pin through
+`scripts/setup/write-installer-pin.sh`, which validates every field and refuses
+a partial write, then bumps the Nix version, commits, and tags. A manifest that
+publishes no digest never bumps.
+
+### Rationale
+
+- **A build is reproducible from the tree alone.** The version, URL and digest
+  are in git, so a checkout builds the same bytes next month, and a bump is a
+  commit someone can read, revert, or bisect to.
+- **Fail closed on tampering and re-publishes.** The redirect never published a
+  hash; the manifest does. A corrupted or replaced download stops the build
+  instead of shipping.
+- **The audit gate is structural, not procedural.** A new upstream version
+  cannot reach a package without first moving the pin, and moving the pin is
+  the moment the patch suite gets re-audited (the marker gate in
+  `verify-patches.sh` and the fixtures in `tests/linux-patches.bats` fail on
+  drift; the stub-backend assert in the artifact smoke test catches the silent
+  kind).
+- **One writer.** Version, URL and digest move together through one validated
+  script, so the pin can never be internally inconsistent.
+
+### Alternatives considered
+
+- **Fix the resolver, keep resolving at build time** (#55's shape). Simplest
+  diff, but leaves every build tracking upstream's publish cadence and keeps
+  the version constant as the sole guard. Rejected.
+- **Pin the version only, resolve the URL and digest live.** Still trusts
+  whatever the manifest says that day for the bytes; a re-published same-version
+  installer would slip through. Rejected.
+- **Squirrel `RELEASES` + nupkg as the primary source.** Works today and is the
+  natural fallback if `latest.json` disappears
+  ([#70](https://github.com/wispr-flow-linux/wispr-flow-linux/pull/70)); the
+  manifest is preferred because it is what upstream's own installer reads and it
+  publishes a SHA-256 rather than a SHA-1.
+
+### Consequences
+
+- `./build.sh` without `--exe` works again and builds the audited version.
+- Merging a working pin to `main` re-arms the nightly bump workflow; whether
+  the publish chain gets a human gate (a GitHub environment with a required
+  reviewer, or a bot-opened PR instead of a tag) is a separate decision.
+- A stale `extract/` tree from another version is refused rather than reused
+  under the pinned label.
+- `docs/building.md` and `RELEASING.md` describe the pin and the manual bump
+  (`resolve-installer-url.sh | write-installer-pin.sh`).
+
+### References
+
+- [#83](https://github.com/wispr-flow-linux/wispr-flow-linux/issues/83),
+  [#55](https://github.com/wispr-flow-linux/wispr-flow-linux/pull/55) (the
+  manifest resolver, by @khamsakamal48),
+  [learnings/patching-minified-js.md](learnings/patching-minified-js.md#end-to-end-verification-post-build),
+  [learnings/test-methodology.md](learnings/test-methodology.md).
+
+---
+
+## D-011 — The publish chain is ungated and fails closed
+
+- **Status:** Accepted
+- **Decided:** 2026-09-22
+- **Owner:** @aaddrick
+
+### Context
+
+[D-010](#d-010--the-installer-is-pinned-in-tree-not-resolved-at-build-time)
+left one question open: once the pin is in and the nightly
+`check-wispr-version` workflow is re-armed, it pushes a `v*` tag with no human
+between it and the APT, DNF and AUR repos. The chain in
+[`ci.yml`](../.github/workflows/ci.yml) builds both architectures, runs the
+artifact tests, creates the Release and publishes, all from that one tag push.
+The candidates for a gate were a GitHub environment with a required reviewer
+on the publish jobs, a bot-opened pull request instead of a tag, or nothing.
+
+The sibling project (claude-desktop-debian) runs the same shape with no gate
+and has for months: its bump bot tags, the chain publishes, and a red job is
+the only thing that stops a release.
+
+### Decision
+
+**No gate.** The chain stays automatic from the bump workflow's tag push to
+the package repos, and it fails closed. What already makes it fail closed:
+
+- `release` needs `build-amd64`, `build-arm64` and `test-artifacts`; the
+  three publish jobs need `release`. A red job anywhere ships nothing.
+- Each build downloads the pinned installer and refuses it on a SHA-256
+  mismatch.
+- Every bundle patch asserts its anchor count and aborts on drift.
+- `verify-patches.sh` greps the shipped asar for every marker after repack.
+- The launch smoke test fails when the helper reports the `stub` injection
+  backend.
+
+The manual look-first path is a **release-candidate tag**: an `-rc` suffix on
+the wrapper version (`v1.0.4-rc.1+wispr1.6.897`) builds, tests and creates a
+GitHub pre-release with the assets the final tag would ship, and the APT, DNF
+and AUR jobs skip it. The bump workflow never produces rc tags. A bad release
+that shipped is marked pre-release and followed by a new tag, never deleted
+([`RELEASING.md`](../RELEASING.md)).
+
+**Amended 2026-09-24 (issue #103).** The bump workflow runs the bats suite
+and `tests/test-patch-stage.sh` over the newly pinned installer before it
+commits, and pushes the commit and the tag only on green. A red pre-check
+leaves `main` and the tags untouched and opens or bumps a `bump-failure`
+issue that the next green run closes. This is the same machine check the
+tag build would run, moved ahead of the push; it is not a human gate. The
+1.6.937 bump had landed red on `main` with no issue filed, and the workflow
+had failed nightly for a week before that without a signal.
+
+### Rationale
+
+- **One maintainer.** A gate that waits on a person is a daily click with
+  nothing new to look at, and the click stops happening. Bumps then pile up
+  and the port drifts from upstream, which is the failure the bot exists to
+  prevent.
+- **Every failure that matters is already a red job.** Wrong bytes, a moved
+  anchor, a missing marker and the silent stub backend are all machine checks.
+  The one class a human gate would have caught, semantic drift behind a
+  matching anchor, is caught by the fixture tests and the smoke test, not by
+  someone eyeballing a diff of minified JS.
+- **The rc path keeps the option.** When a bump does deserve a look (a new
+  Electron major, a patch cluster landing), a hand-pushed rc tag gives the
+  full build and a pre-release to inspect without touching the repos.
+- **Proven shape.** The sibling has run it without incident.
+
+### Alternatives considered
+
+- **GitHub environment with a required reviewer on the publish jobs.**
+  Blocks the three repo jobs until approved. Rejected: the approval has no
+  evidence to weigh beyond the green run that already exists, and an
+  unapproved run leaves a Release with assets that no repo serves.
+- **Bot-opened pull request instead of a tag.** Turns the bump into a
+  reviewable diff. Rejected: the diff is three lines of pin plus a Nix
+  version, the review would still rest on the same CI checks, and the merge
+  would then need its own path to a tag.
+- **Hold the bump until a manual audit.** This is what the rc tag is for on
+  the occasions it is wanted; as the default it is the gate above with worse
+  ergonomics.
+
+### Consequences
+
+- Merging a working pin to `main` re-arms the bot, and the first tag it
+  pushes ships if it is green. That is the intended outcome.
+- Every new bundle patch must carry its `MARKERS` entry in
+  `verify-patches.sh`, its `MARKER_SAMPLES` twin in
+  `tests/verify-patches.bats` and its apply / idempotent / bail fixtures in
+  `tests/linux-patches.bats`. With no human gate, those tests are the audit.
+- `ci.yml` gates the three publish jobs on `!contains(github.ref_name,
+  '-rc')`, marks rc Releases `prerelease`, and skips pre-releases when
+  choosing the previous tag for release notes. `build.sh` drops the `-rc.N`
+  from the package version.
+- A red run leaves no partial publish; the fix goes to `main` and a new tag
+  (`+rebuild.N` if upstream has not moved) re-runs the chain.
+
+### References
+
+- [D-010](#d-010--the-installer-is-pinned-in-tree-not-resolved-at-build-time),
+  [`RELEASING.md`](../RELEASING.md),
+  [`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
+  [#84](https://github.com/wispr-flow-linux/wispr-flow-linux/pull/84).

@@ -152,6 +152,10 @@ backup, `node --check`s the result, and is idempotent (re-run = byte-identical).
 | Chrome window fell to default framed + visible menu bar → make it frameless like win32 (1.5.695: the meeting_recorder window; the Hub/scratchpad windows now self-frame Linux via a two-way else branch) | [`linux-window-frame.sh`](../../scripts/patches/linux-window-frame.sh) | `WISPR_LINUX_FRAMELESS` |
 | Fresh installs seeded macOS `fn`/⌘ shortcut defaults + skipped the onboarding Permissions step → widen each renderer's `isWindows` **bind** to also be true on linux (bridge stays honest) | [`linux-renderer-treat-as-windows.sh`](../../scripts/patches/linux-renderer-treat-as-windows.sh) | `WISPR_LINUX_RENDERER_ISWIN` |
 | Cold-start `wispr-flow:` deep links dropped (parse was win32-only) → widen the argv-parse guard | [`linux-deeplink.sh`](../../scripts/patches/linux-deeplink.sh) | `WISPR_LINUX_DEEPLINK` |
+| Status-pill drag-to-reposition can never complete (client-side absolute window positioning has no native-Wayland equivalent) and strands an input-blocking dimming overlay → force the drag-overlay activation flag false on Linux | [`linux-disable-pill-drag.sh`](../../scripts/patches/linux-disable-pill-drag.sh) | `WISPR_LINUX_DISABLE_PILL_DRAG` |
+| Fresh Linux profiles were **seeded** with macOS chords, so push-to-talk landed on keycode `-1` (no Linux key) — blank PTT in Settings, no way past the onboarding shortcuts step (#33, #46) → widen the win32 flag *inside the main bundle's shortcuts module only* | [`linux-main-shortcut-defaults.sh`](../../scripts/patches/linux-main-shortcut-defaults.sh) | `WISPR_LINUX_MAIN_SHORTCUT_DEFAULTS` |
+| The app data dir (database, meetings, backups, extension state) and the logs dir took the macOS arm, so Linux wrote `~/Library/Application Support/Wispr Flow` (#100) → a Linux arm under `$XDG_CONFIG_HOME/Wispr Flow`, the dir Windows also shares with Electron's `userData`; the launcher moves an existing legacy dir over | [`linux-xdg-data-dir.sh`](../../scripts/patches/linux-xdg-data-dir.sh) | `WISPR_LINUX_XDG_DATA_DIR` |
+| "Open at login" wrote nothing and `wasOpenedAtLogin` was always false, because Electron's login-item API is macOS/Windows only, so the Hub opened on every launch (#81) → replace `app.set/getLoginItemSettings` on Linux with an XDG autostart entry whose `Exec=` carries `--hidden` (no call-site anchors; the three callers are tripwires) | [`linux-autostart.sh`](../../scripts/patches/linux-autostart.sh) + [`linux-autostart.js`](../../scripts/patches/linux-autostart.js) | `WISPR_LINUX_AUTOSTART` |
 
 `linux-renderer-treat-as-windows.sh` is the high-leverage one: per renderer it
 widens the *one* place `isWindows` is bound into a module-local
@@ -179,6 +183,31 @@ correctly wants the Windows branch. The OS-API danger class lives in the **main*
 bundle and gates on `process.platform`/`H8`, which this renderer-only patch never
 touches.
 
+### The main bundle needed its own, narrower cut
+
+Being renderer-only is also this patch's blind spot. The default shortcut map
+lives in a module *shared* by both bundles, and the profile is written by the
+**main** process — where the same flag is `"win32"===process.platform`, i.e.
+false on Linux. So the renderer showed Windows chords while main persisted the
+macOS ones, and a fresh `config.json` came out as
+`"shortcuts":{"-1":"ptt","-1+32":"popo",...},"modifierShortcut":"9"`. Since `-1`
+is the "no keycode on this platform" sentinel, push-to-talk was literally
+unpressable: the key monitor delivered events that matched nothing, Settings
+rendered the binding blank, and onboarding could not be completed. That is the
+one bug behind both #33 and #46.
+
+The fix could **not** be "widen `H8` at its definition" — in the main bundle it
+has ~79 consumers and does gate the real Windows-only OS-API class (registry,
+`%LOCALAPPDATA%` path resolution, Windows exit-code semantics). So
+[`linux-main-shortcut-defaults.sh`](../../scripts/patches/linux-main-shortcut-defaults.sh)
+widens the flag only where it is *read inside the shortcuts module*. An audit of
+1.6.774 found the module reads it at **8** sites and every one selects a Windows
+chord against a macOS chord (default map, default modifier, four polish-prompt /
+meeting-recorder chord sets, two PTT-display accessors) — so all 8 are widened
+together, and the patch **fails closed** if any read there is ever not a ternary,
+rather than silently widening an OS gate. Fixing only the PTT default would have
+left its siblings seeding `-1` (e.g. `"-1+77"` for `open_meeting_recorder`).
+
 **Still gated out, deliberately deferred (known limits, not patched):**
 
 - **Meeting features behind `tD`** — speaker attribution, meeting auto-detect,
@@ -199,11 +228,42 @@ Linux).
 
 **Correct by design, don't "fix":** keycode tables, Cmd-vs-Ctrl accelerators,
 ⌘/⌥ glyph labels, `shouldMuteAudio` defaulting false, Squirrel update hooks
-(Linux uses deb/rpm/AppImage), `setLoginItemSettings` auto-launch (Electron
-writes an XDG autostart `.desktop` on Linux), single-instance lock and protocol
-registration (platform-neutral). The macOS `~/Library/...` path strings that
-leak into the Linux ternary are never read at runtime — `WISPR_APP_SUPPORT_DIR`
-/ `WISPR_LOG_DIR` override them from `app.getPath()`.
+(Linux uses deb/rpm/AppImage), single-instance lock and protocol registration
+(platform-neutral).
+
+**Earlier versions of this page were wrong on two points.** First,
+`setLoginItemSettings` is a no-op on Linux in Electron and writes no XDG
+autostart entry. A fresh 1.6.937 profile runs the new-user hook that sets it,
+and no `autostart/` directory appears. The `openAtLogin` pref defaults to true
+regardless, so it says nothing about how the app was started (#69, #82).
+`linux-autostart.sh` now backs both login-item methods with an XDG entry
+(#81).
+Second, the macOS `~/Library/...` path strings in the platform module are read
+at runtime. `WISPR_APP_SUPPORT_DIR` and `WISPR_LOG_DIR` are exports to child
+processes, set from `app.getPath()` after startup. They override nothing, and
+every database path went through the `~/Library` constant until
+`linux-xdg-data-dir.sh` (#100).
+
+## Upstream's own Linux reads
+
+Upstream reads `"linux"===process.platform` itself in a handful of places,
+and the `upstream` line in `scripts/patches/tripwires.tsv` counts them so a
+new one stops the nightly bump. In 1.6.1337 there are five, and none needs a
+patch:
+
+- a `ps` failure falls back to `/proc/<pid>/stat`
+- the home-dir resolver's Linux arm (`/root` or `/home/<user>`)
+- a longer action-completion timeout (60s instead of 30s)
+- MeetingDisplayMedia skips its loopback capture handler
+- the extension-connections credential store throws "Secure credential
+  storage is unavailable on this device." when Electron's safeStorage fell
+  back to `basic_text`, i.e. no Secret Service keyring is running
+
+The last one arrived between 1.6.1264 and 1.6.1297. It is upstream
+declining to encrypt connector tokens under a fixed key, so the port leaves
+it alone and documents the keyring fix in `docs/troubleshooting.md`.
+When the count moves again, run the audit below, add the new read here, and
+bump the count.
 
 ## How to re-run this audit on a new Wispr version
 

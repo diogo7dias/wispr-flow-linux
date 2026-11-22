@@ -35,6 +35,8 @@
 #   ...quitting"),void e.app.quit();if(f.H8){const e=B(process.argv.find(
 #       e=>e.startsWith("wispr-flow:")||e.startsWith("wispr-flow/")));e&&L(e)}
 #       e.app.on("second-instance",(t,r)=>{ ...
+# From 1.6.1264 the same block is guarded by the tail of a comma sequence:
+#   if(t=r.app.setAsDefaultProtocolClient("wispr-flow"),...,A.H8){const e=...
 # where `f.H8` resolves to the win32 flag (`H8:()=>c` with
 # `c="win32"===process.platform`; cf. `d.H8?"windows":d.tD?"macos"` and the
 # `tD`=darwin flag used by helper-resolver.sh). `process.argv.find` occurs
@@ -50,9 +52,10 @@
 #   if(f.H8||"linux"===process.platform){/*WISPR_LINUX_DEEPLINK*/const e=B(...
 #
 # We anchor on `process.argv.find` (a stable developer API call, unique in the
-# bundle) and capture the preceding `if(<winflag>){` -- where <winflag> is a
-# minified `obj.prop` accessor we read back out of the match rather than
-# hardcoding -- then rewrite just the `{` that opens that block. This cannot
+# bundle) and capture the preceding `if(<winflag>){` or `,<winflag>){` --
+# where <winflag> is a minified `obj.prop` accessor we read back out of the
+# match rather than hardcoding -- then rewrite just the `{` that opens that
+# block. This cannot
 # regress Windows (f.H8 still wins) or macOS (neither branch is true; open-url
 # is unaffected). It does NOT touch any Squirrel/registry win32 logic elsewhere
 # that may share the same flag, because the edit is scoped to the single
@@ -62,37 +65,16 @@
 #===============================================================================
 set -euo pipefail
 
-BUNDLE="${1:-}"
-if [[ -z "$BUNDLE" ]]; then
-	# default to the in-repo extracted bundle
-	BUNDLE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-	BUNDLE="$BUNDLE/extract/app/.webpack/main/index.js"
-fi
-
-if [[ ! -f "$BUNDLE" ]]; then
-	echo "ERROR: bundle not found: $BUNDLE" >&2
-	exit 1
-fi
-
-# --- Idempotency guard --------------------------------------------------------
-LINUX_MARKER="WISPR_LINUX_DEEPLINK"
-if grep -q "$LINUX_MARKER" "$BUNDLE"; then
-	echo "Already patched ($LINUX_MARKER present in $BUNDLE) - nothing to do."
-	exit 0
-fi
-
-# --- Backup -------------------------------------------------------------------
-if [[ ! -f "$BUNDLE.orig" ]]; then
-	cp -p "$BUNDLE" "$BUNDLE.orig"
-	echo "Backup written: $BUNDLE.orig"
-fi
+# shellcheck source=scripts/patches/_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
+patch_begin "WISPR_LINUX_DEEPLINK" "${1:-}" "extract/app/.webpack/main/index.js"
 
 # --- Patch (win32 flag accessor DERIVED, not hardcoded) -----------------------
 # The minified win32 accessor (`f.H8` today) churns between releases, so we read
 # it back out of the match. The STABLE anchor is the developer API call
 # `process.argv.find` plus the `wispr-flow:` scheme literal that follows it --
 # both survive minification and together occur exactly once.
-python3 - "$BUNDLE" "$LINUX_MARKER" <<'PY'
+python3 - "$BUNDLE" "$MARKER" <<'PY'
 import sys, io, re
 path, marker = sys.argv[1], sys.argv[2]
 with io.open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
@@ -104,8 +86,17 @@ with io.open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
 #
 #   if(<winflag>){const <v>=<B>(process.argv.find(<a>=>
 #       <a>.startsWith("wispr-flow:")
+#
+# From 1.6.1264 the flag is the LAST operand of a comma sequence instead:
+#   if(t=app.setAsDefaultProtocolClient("wispr-flow"),...,<winflag>){const ...
+# so the flag is preceded by `if(` or `,` (both mean "the if's condition
+# ends with <winflag>"); `<lead><winflag>||"linux"===...)` keeps the same
+# meaning in either shape, since `||` binds tighter than the comma operator.
+# Any other lead is refused: after `&&` or `!` the widening would change the
+# condition, and a bare `(` could be a parameter list or `catch(`.
 anchor = re.compile(
-    r'if\((?P<flag>[\w$]+(?:\.[\w$]+)?)\)\{'        # if(<winflag>){
+    r'(?P<lead>if\(|,)'                             # if( | ,
+    r'(?P<flag>[\w$]+(?:\.[\w$]+)?)\)\{'            #   <winflag>){
     r'const\s+[\w$]+='                              #   const <v>=
     r'[\w$]+\('                                     #   <B>(
     r'process\.argv\.find\('                        #   process.argv.find(
@@ -128,9 +119,9 @@ flag = matches[0].group('flag')
 def widen(m):
     head = m.group(0)
     open_brace = head.index('){') + 1   # position of `)` before `{`
-    # head[:open_brace] == 'if(<flag>)'  ; head[open_brace:] == '{const ...'
+    # head[:open_brace] == '<lead><flag>)' ; head[open_brace:] == '{const ...'
     return (
-        'if(' + flag + '||"linux"===process.platform)'
+        m.group('lead') + flag + '||"linux"===process.platform)'
         '{/*' + marker + '*/'
         + head[open_brace + 1:]          # skip the original '{'
     )
@@ -146,33 +137,16 @@ print(f"Patched: derived win32 flag={flag!r}; cold-start argv guard widened "
 PY
 
 # --- Verify the result --------------------------------------------------------
-if ! grep -q "$LINUX_MARKER" "$BUNDLE"; then
-	echo "ERROR: post-patch verification failed (marker not found)." >&2
-	echo "       Restoring backup." >&2
-	cp -p "$BUNDLE.orig" "$BUNDLE"
-	exit 1
-fi
+patch_verify_marker
 
 # The widened guard must sit immediately before the argv scan (proves we hit the
 # cold-start site, not some unrelated marker placement).
-if ! grep -q '"linux"===process.platform){/\*'"$LINUX_MARKER"'\*/const' "$BUNDLE"; then
-	echo "ERROR: marker not adjacent to the argv guard. Restoring backup." >&2
-	cp -p "$BUNDLE.orig" "$BUNDLE"
-	exit 1
-fi
+patch_expect_shape -q '"linux"===process.platform){/\*'"$MARKER"'\*/const' \
+	-- 'marker not adjacent to the argv guard.'
 
 # Syntax-check: catch a replacement that serializes but doesn't parse before it
 # ever reaches asar.
-if command -v node >/dev/null; then
-	if ! node --check "$BUNDLE"; then
-		echo "ERROR: node --check failed on patched bundle. Restoring backup." >&2
-		cp -p "$BUNDLE.orig" "$BUNDLE"
-		exit 1
-	fi
-	echo "node --check OK"
-fi
-
-echo "OK: Linux cold-start deep-link guard widened in $BUNDLE"
+patch_finish "Linux cold-start deep-link guard widened in $BUNDLE"
 echo
 echo "Patched startup now does (conceptually):"
 echo "  if (isWin32 || process.platform === 'linux') {"
