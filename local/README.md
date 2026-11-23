@@ -11,7 +11,7 @@ The fork applies and verifies the sandbox, audio-refresh, status-broadcast and
 startup (`--hidden`) and the compact status window come from upstream's
 `linux-autostart` and `linux-status-compact`; the local start-hidden,
 status-window-size, status-input-region and status-animation patches no longer
-anchor and are not applied. It builds `vendor/helper`
+anchored and were removed. It builds `vendor/helper`
 with Cargo.lock, preserving terminal paste and safe terminal selection behavior.
 The helper also includes [clipboard preservation and focus guards](clipboard-safety.md).
 `HELPER_BIN` explicitly overrides that helper; do not set it for normal builds.

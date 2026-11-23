@@ -43,3 +43,18 @@ Deployment backup:
 `/home/ddm/.cache/wispr-flow/audio-refresh.BfhWeh/app.asar.before`.
 To roll back, quit Flow, restore that archive to the installed resources
 directory, then launch Flow again. The Rust clipboard helper is unchanged.
+
+## Audio server restarts (2026-11-23)
+
+The patch above handles device changes. It does not help when the audio server
+itself restarts, which this machine does after every resume
+(`audio-restart-after-resume.service`): Flow's Chromium audio process keeps its
+dead PulseAudio connection and dictation fails with `MicNotFound`.
+`pipewire-pulse-wispr-audio.conf` is a drop-in for the user unit
+`pipewire-pulse.service` that ends that one subprocess whenever the audio server
+starts; Flow starts a fresh one on the next dictation. Install it as
+`~/.config/systemd/user/pipewire-pulse.service.d/wispr-audio.conf`, then run
+`systemctl --user daemon-reload`. To roll back, delete that file and reload.
+Validated by restarting `pipewire-pulse.service` with Flow running: the audio
+subprocess was replaced and the next dictation opened the microphone. A real
+suspend and resume was not tested.

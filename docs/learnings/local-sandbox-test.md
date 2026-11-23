@@ -14,9 +14,9 @@ Flow 1.6.827 can initialize its preloads with forced Electron sandboxing after r
   store bridges initialize, and user-confirmed dictation reaches the terminal.
 - Main process and native helper remain privileged. Existing IPC authorization
   has not been comprehensively audited. This is not whole-app confinement.
-- `scripts/patches/status-animation.cjs` removes the status ticker's fixed 50 ms
-  throttle. Its waveform and audio smoothing consumers use elapsed time. The
-  existing hidden/unsubscribed guards remain. Active animation CPU usage may rise.
+- A `status-animation` patch removed the status ticker's fixed 50 ms throttle on
+  1.6.827. It no longer anchored on 1.6.1337 and was removed, with the
+  start-hidden, status-window-size and status-input-region patches.
 - A 240-frame idle status sample averaged 8.33 ms, p95 8.4 ms, max 8.5 ms.
   This measures frame callbacks, not presentation or dictation-animation FPS.
 - Two observed stop-recording-to-PasteText-request intervals were 471 ms and
@@ -24,8 +24,9 @@ Flow 1.6.827 can initialize its preloads with forced Electron sandboxing after r
   or isolated server latency. No dictated text was included in the measurements.
 
 The fork now applies these patches through `scripts/apply-local-fixes.cjs`
-before repacking and verifies their markers in the shipped archive. Startup
-hiding and 70-percent status sizing are included. Revalidate on version changes;
+before repacking and verifies their markers in the shipped archive.
+70-percent status sizing is included; startup hiding now comes from upstream.
+Revalidate on version changes;
 changed anchors fail the build instead of silently dropping a patch.
 
-Run `node --test tests/sandbox-preloads.test.cjs tests/status-animation.test.cjs`.
+Run `node --test tests/sandbox-preloads.test.cjs`.
