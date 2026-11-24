@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // The upstream display scaler saturates 20 dB above its lowest sample.
-// Use a fixed dBFS range for visualization only; captured/uploaded audio is untouched.
+// Use a fixed -55 to -30 dBFS range for visualization only; captured/uploaded
+// audio is untouched. Conversational speech here measures about -42 to -31
+// dBFS, so a higher ceiling leaves the pill's bars near their resting size.
 const fs = require('node:fs');
 const vm = require('node:vm');
 const file = process.argv[2];
@@ -11,7 +13,7 @@ const pattern = /"wav"===([\w$]+)\)\{const ([\w$]+)=([\w$]+)\.scale\(([\w$]+)\);
 if ([...code.matchAll(pattern)].length !== 1)
  throw new Error('Expected one WAV display-level scaler; re-audit required');
 code = code.replace(pattern, (_m,encoding,level,_scaler,raw,window,value,queue) =>
- `"wav"===${encoding}){const ${level}=/*${marker}*/Number.isFinite(${raw})?Math.max(0,Math.min(1,(${raw}+55)/50)):0;((${window},${value})=>{${queue}.push(${value})`);
+ `"wav"===${encoding}){const ${level}=/*${marker}*/Number.isFinite(${raw})?Math.max(0,Math.min(1,(${raw}+55)/25)):0;((${window},${value})=>{${queue}.push(${value})`);
 new vm.Script(code, {filename:file});
 fs.writeFileSync(file, code);
-console.log('Display levels use -55 to -5 dBFS instead of a saturating adaptive floor.');
+console.log('Display levels use -55 to -30 dBFS instead of a saturating adaptive floor.');

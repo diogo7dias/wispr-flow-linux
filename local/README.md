@@ -8,7 +8,7 @@ device-access policy, fresh-login requirement, validation, and rollback.
 
 The fork applies and verifies the sandbox, audio-refresh, status-broadcast,
 70-percent status-size and voice-level-range patches on every build. The last
-one maps the pill's microphone level onto a fixed -55 to -5 dBFS range: the
+one maps the pill's microphone level onto a fixed -55 to -30 dBFS range: the
 stock scaler saturates 20 dB above the quietest sample it has seen, so the
 level sat near 1.0 and the pill's waveform looped at a fixed size whatever
 was said. Since the 1.6.1337 sync, hidden

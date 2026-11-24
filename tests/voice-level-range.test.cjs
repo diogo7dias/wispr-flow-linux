@@ -14,8 +14,8 @@ test('display has silence floor and headroom for speech',t=>{
  assert.equal(spawnSync(process.execPath,[script,file]).status,0);
  const code=fs.readFileSync(file,'utf8'),queue=[];
  const context={queue};vm.createContext(context);vm.runInContext(code,context);
- for(const value of [-80,-55,-45,-30,-15,0])vm.runInContext(`sample(${value})`,context);
- assert.deepEqual(queue,[0,0,.2,.5,.8,1]);
+ for(const value of [-80,-55,-50,-42.5,-35,-30,0])vm.runInContext(`sample(${value})`,context);
+ assert.deepEqual(queue,[0,0,.2,.5,.8,1,1]);
  assert.equal(spawnSync(process.execPath,[script,file]).status,0);
  assert.equal(fs.readFileSync(file,'utf8'),code);
 });
