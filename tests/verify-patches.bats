@@ -32,6 +32,7 @@ declare -gA MARKER_SAMPLES=(
 	[sandbox]='/*WISPR_LINUX_SANDBOX_PRELOAD_V1*/'
 	[broadcast]='/*WISPR_LINUX_STATUS_BROADCAST*/'
 	[scale]='/*WISPR_LINUX_STATUS_SIZE_70*/'
+	[levelrange]='/*WISPR_LINUX_VOICE_LEVEL_RANGE*/'
 	[branch]='if (process.env.WISPR_LINUX_HELPER_BRANCH) { return "linux"; }'
 	[logline]='console.log("Running packaged Linux Helper service", { serviceScriptPath: p });'
 	[stagedpath]='const s = path.join(resourcesPath, "Release", "wispr-flow-linux-helper");'

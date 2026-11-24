@@ -7,6 +7,7 @@ const patches = [
  ['audio-refresh.cjs', path.join(root, '.webpack/renderer/hub/index.js')],
  ['sandbox-preloads.cjs', root],
  ['status-broadcast.cjs', path.join(root, '.webpack/main/index.js')],
+ ['voice-level-range.cjs', path.join(root, '.webpack/main/index.js')],
  ['status-size.cjs', path.join(root, '.webpack/renderer/status/index.html')],
 ];
 for (const [script, target] of patches) {

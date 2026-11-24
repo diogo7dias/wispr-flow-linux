@@ -6,8 +6,12 @@ for hot-plug, the local shortcut-only mode, trade-offs, tests, and rollback.
 See [shared input permissions](input-permissions.md) for the narrower local
 device-access policy, fresh-login requirement, validation, and rollback.
 
-The fork applies and verifies the sandbox, audio-refresh, status-broadcast and
-70-percent status-size patches on every build. Since the 1.6.1337 sync, hidden
+The fork applies and verifies the sandbox, audio-refresh, status-broadcast,
+70-percent status-size and voice-level-range patches on every build. The last
+one maps the pill's microphone level onto a fixed -55 to -5 dBFS range: the
+stock scaler saturates 20 dB above the quietest sample it has seen, so the
+level sat near 1.0 and the pill's waveform looped at a fixed size whatever
+was said. Since the 1.6.1337 sync, hidden
 startup (`--hidden`) and the compact status window come from upstream's
 `linux-autostart` and `linux-status-compact`; the local start-hidden,
 status-window-size, status-input-region and status-animation patches no longer
