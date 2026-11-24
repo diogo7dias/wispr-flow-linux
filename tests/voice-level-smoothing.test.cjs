@@ -1,0 +1,20 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const vm=require('node:vm');
+const {spawnSync}=require('node:child_process');
+test('waveform eases toward the new level faster',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wispr-ease-test-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'status.js');
+ fs.writeFileSync(file,'function step(e,t){const o=.85*e+t*(1-.85);return Math.floor(100*o)/100}');
+ const script=path.resolve(__dirname,'../scripts/patches/voice-level-smoothing.cjs');
+ assert.equal(spawnSync(process.execPath,[script,file]).status,0);
+ const code=fs.readFileSync(file,'utf8'),context={};
+ vm.createContext(context);vm.runInContext(code,context);
+ assert.equal(vm.runInContext('step(0,1)',context),.4);
+ assert.equal(spawnSync(process.execPath,[script,file]).status,0);
+ assert.equal(fs.readFileSync(file,'utf8'),code);
+});

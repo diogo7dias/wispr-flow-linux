@@ -14,6 +14,12 @@ if ([...code.matchAll(pattern)].length !== 1)
  throw new Error('Expected one WAV display-level scaler; re-audit required');
 code = code.replace(pattern, (_m,encoding,level,_scaler,raw,window,value,queue) =>
  `"wav"===${encoding}){const ${level}=/*${marker}*/Number.isFinite(${raw})?Math.max(0,Math.min(1,(${raw}+55)/25)):0;((${window},${value})=>{${queue}.push(${value})`);
+// Flow averages these levels for 150 ms before sending them, which makes the
+// pill trail the voice. Send every 50 ms instead.
+const interval = /(\w+=\[\]\}\)\(\w+\)\},)150\)\)/g;
+if ([...code.matchAll(interval)].length !== 1)
+ throw new Error('Expected one audio-level send interval; re-audit required');
+code = code.replace(interval, '$150))');
 new vm.Script(code, {filename:file});
 fs.writeFileSync(file, code);
-console.log('Display levels use -55 to -30 dBFS instead of a saturating adaptive floor.');
+console.log('Display levels use -55 to -30 dBFS, sent every 50 ms.');

@@ -57,6 +57,7 @@ MARKERS=(
   "status: dictation state broadcast|F|WISPR_LINUX_STATUS_BROADCAST"
   "status: 70 percent size|F|WISPR_LINUX_STATUS_SIZE_70"
   "status: display level range|F|WISPR_LINUX_VOICE_LEVEL_RANGE"
+  "status: faster waveform easing|F|WISPR_LINUX_VOICE_LEVEL_SMOOTHING"
   "helper-resolver: Linux branch marker|F|WISPR_LINUX_HELPER_BRANCH"
   "helper-resolver: Linux helper log line|F|Running packaged Linux Helper service"
   "helper-resolver: Linux helper staged path|F|wispr-flow-linux-helper"
